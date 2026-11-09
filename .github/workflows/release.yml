@@ -37,14 +37,17 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --verify-tag --draft --title "Pixel Forge $TAG" --notes-file docs/RELEASE_NOTES.md
           fi
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]; then
+            echo "This version is already published. Bump the version and create a new tag." >&2
+            exit 1
+          fi
           echo "id=$(gh release view "$TAG" --json databaseId --jq .databaseId)" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
   build:
     needs: prepare
     strategy:
       fail-fast: false
-      # Serialize metadata merges to avoid losing another platform's updater entry.
-      max-parallel: 1
+      max-parallel: 3
       matrix:
         include:
           - platform: macos-latest
@@ -63,6 +66,8 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -82,7 +87,7 @@ jobs:
           releaseId: ${{ needs.prepare.outputs.release_id }}
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseDraft: true
-          uploadUpdaterJson: true
+          uploadUpdaterJson: false
           updaterJsonPreferNsis: true
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/tauri.updater.conf.json
   publish:
@@ -98,6 +103,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release download "$TAG" --pattern latest.json
+          gh api "repos/$GITHUB_REPOSITORY/releases/${{ needs.prepare.outputs.release_id }}" > release.json
+          gh release download "$TAG" --pattern '*.sig' --dir signatures
+          node scripts/updater-manifest.mjs release.json signatures
           node scripts/verify-release.mjs latest.json
+          gh release upload "$TAG" latest.json --clobber
           gh release edit "$TAG" --draft=false --latest
