@@ -10,21 +10,24 @@ export function createManifest(release, signatures, version) {
     ['darwin-x86_64', '_x64.app.tar.gz', 'app'],
     ['windows-x86_64', '_x64-setup.exe', 'nsis'],
   ]) {
-    const matches = release.assets.filter((asset) => asset.name.endsWith(suffix));
+    const matches = release.assets.filter((asset) => asset.name.endsWith(`_${version}${suffix}`));
     if (matches.length !== 1) throw Error('Expected one updater artifact for ' + target);
     const asset = matches[0];
     const signatureName = asset.name + '.sig';
     const signature = signatures[signatureName]?.trim();
-    const prefix = `https://github.com/ooberguts/pixel-forge/releases/download/v${version}/`;
+    const downloadRoot = 'https://github.com/ooberguts/pixel-forge/releases/download/';
+    const prefix = `${downloadRoot}v${version}/`;
     if (
-      !asset.browser_download_url.startsWith(prefix) ||
+      !asset.browser_download_url.startsWith(downloadRoot) ||
       !asset.size ||
       !signature ||
       !release.assets.some((item) => item.name === signatureName)
     ) {
       throw Error('Missing signature or invalid release URL for ' + target);
     }
-    platforms[target] = { url: asset.browser_download_url, signature };
+    // Draft releases expose temporary "untagged-*" URLs. Publish canonical tag
+    // links that become public when the same draft is published.
+    platforms[target] = { url: prefix + encodeURIComponent(asset.name), signature };
     platforms[`${target}-${bundle}`] = platforms[target];
   }
   return {

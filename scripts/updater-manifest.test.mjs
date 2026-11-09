@@ -41,3 +41,16 @@ test('rejects mismatched tags and updater download origins', () => {
   release.assets[0].browser_download_url = 'https://example.org/update';
   assert.throws(() => createManifest(release, signatures, '0.2.1'));
 });
+test('uses stable tag URLs when GitHub returns temporary draft download URLs', () => {
+  const { release, signatures } = fixture();
+  for (const asset of release.assets)
+    asset.browser_download_url = asset.browser_download_url.replace(
+      '/v0.2.1/',
+      '/untagged-example/',
+    );
+  const manifest = createManifest(release, signatures, '0.2.1');
+  assert.equal(
+    manifest.platforms['darwin-aarch64'].url,
+    'https://github.com/ooberguts/pixel-forge/releases/download/v0.2.1/Pixel.Forge_0.2.1_aarch64.app.tar.gz',
+  );
+});
