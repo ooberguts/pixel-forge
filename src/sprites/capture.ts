@@ -1,5 +1,5 @@
 import type { RGB, Settings } from '../engine';
-import { frameTimes, type Progress } from '../export';
+import { frameTimes, throwIfCancelled, type Progress } from '../export';
 import { disposeMedia, loadMedia, renderMedia, seekVideo, type Media } from '../media';
 import type { Stabilization } from '../stabilization';
 import { newId, validateDocument, type SpriteDocument } from './model';
@@ -46,7 +46,7 @@ export async function captureClip(
     );
   if (!media.url) throw Error('Open a video first.');
   const blob = await (await fetch(media.url)).blob();
-  signal.throwIfAborted();
+  throwIfCancelled(signal);
   const decoder = await loadMedia(new File([blob], media.name, { type: blob.type }));
   const doc: SpriteDocument = {
     name: media.name.replace(/\.[^.]+$/, ''),
@@ -58,7 +58,7 @@ export async function captureClip(
   };
   try {
     for (let i = 0; i < times.length; i++) {
-      signal.throwIfAborted();
+      throwIfCancelled(signal);
       await seekVideo(decoder.source as HTMLVideoElement, times[i]);
       const { canvas } = renderMedia(decoder, settings, palette, stabilization, times[i], true);
       const duration = Math.max(

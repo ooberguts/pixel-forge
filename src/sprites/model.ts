@@ -35,7 +35,12 @@ export const sheetDefaults: SheetOptions = {
   powerOfTwo: false,
   maxSize: 4096,
 };
-export const newId = () => crypto.randomUUID();
+export const newId = () => {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (v) =>
+    v.toString(16).padStart(2, '0'),
+  ).join('');
+};
 export function validateDocument(doc: SpriteDocument) {
   if (
     !Number.isInteger(doc.width) ||
@@ -163,7 +168,7 @@ export function frameAtTime(doc: SpriteDocument, order: number[], timeMs: number
     if (local < doc.frames[i].duration) return i;
     local -= doc.frames[i].duration;
   }
-  return order.at(-1) ?? 0;
+  return order[order.length - 1] ?? 0;
 }
 export function moveFrame(doc: SpriteDocument, from: number, to: number): SpriteDocument {
   if (from === to || to < 0 || to >= doc.frames.length) return doc;

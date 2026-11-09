@@ -38,4 +38,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-      - run: npm run tauri build -- --no-bundle
+      - run: npm run configure:updater
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+      - run: npm run tauri build -- --no-bundle --config src-tauri/tauri.updater.conf.json

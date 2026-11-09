@@ -28,6 +28,9 @@ export interface Progress {
   label: string;
   encoding?: boolean;
 }
+export function throwIfCancelled(signal: AbortSignal) {
+  if (signal.aborted) throw signal.reason ?? new DOMException('Cancelled', 'AbortError');
+}
 export function frameTimes(start: number, end: number, fps: number) {
   if (
     !Number.isFinite(start) ||
@@ -88,14 +91,14 @@ export async function exportVideo(
     let width = 0,
       height = 0;
     for (let i = 0; i < times.length; i++) {
-      signal.throwIfAborted();
+      throwIfCancelled(signal);
       await seekVideo(decoder.source as HTMLVideoElement, times[i]);
       const { canvas } = renderMedia(decoder, settings, palette, stabilization, times[i]);
       const scaled = scaleCanvas(canvas, options.scale);
       width = scaled.width;
       height = scaled.height;
       const bytes = await pngBytes(scaled);
-      signal.throwIfAborted();
+      throwIfCancelled(signal);
       if (session)
         await invoke('write_encode_frame', { id: session, index: i, png: Array.from(bytes) });
       else {
@@ -111,7 +114,7 @@ export async function exportVideo(
         label: `Rendering frame ${i + 1} of ${times.length}`,
       });
     }
-    signal.throwIfAborted();
+    throwIfCancelled(signal);
     if (session) {
       progress({ fraction: 1, label: 'Encoding video with FFmpeg…', encoding: true });
       await invoke('finish_encode', { id: session });
@@ -146,7 +149,7 @@ export async function exportVideo(
       progress({ fraction: 1, label: 'Packing PNG frames…' });
       // PNG is already compressed. Store it to avoid recompressing on the UI thread.
       const bytes = zipSync(frames, { level: 0 });
-      signal.throwIfAborted();
+      throwIfCancelled(signal);
       return await saveBytes(bytes, `${base}-frames.zip`, 'zip');
     }
     return true;
