@@ -11,6 +11,8 @@ export interface AnimationTag {
 }
 export interface SpriteDocument {
   name: string;
+  /** GIF repeat count: -1 once, 0 forever, positive values repeat after the first play. */
+  gifRepeat?: number;
   width: number;
   height: number;
   frames: SpriteFrame[];
@@ -42,6 +44,11 @@ export const newId = () => {
   ).join('');
 };
 export function validateDocument(doc: SpriteDocument) {
+  if (
+    doc.gifRepeat !== undefined &&
+    (!Number.isInteger(doc.gifRepeat) || doc.gifRepeat < -1 || doc.gifRepeat > 65535)
+  )
+    throw Error('Invalid GIF repeat count.');
   if (
     !Number.isInteger(doc.width) ||
     !Number.isInteger(doc.height) ||

@@ -1,5 +1,7 @@
-import { processPixels, type RGB, type Settings } from './engine';
+import { defaults, prepare, processPixels, type RGB, type Settings } from './engine';
 import { frameTransform, type Stabilization } from './stabilization';
+import { decodeGif } from './sprites/gif';
+import type { SpriteDocument } from './sprites/model';
 
 export interface Media {
   name: string;
@@ -10,6 +12,7 @@ export interface Media {
   duration: number;
   url?: string;
   reference?: HTMLCanvasElement;
+  animation?: SpriteDocument;
 }
 export function disposeMedia(media: Media) {
   if (media.source instanceof HTMLVideoElement) {
@@ -19,7 +22,12 @@ export function disposeMedia(media: Media) {
   }
   if (media.url) URL.revokeObjectURL(media.url);
 }
-export async function loadMedia(file: File): Promise<Media> {
+export async function loadMedia(file: File, maxPixels = 80_000_000): Promise<Media> {
+  if (file.type === 'image/gif' || /\.gif$/i.test(file.name))
+    return mediaFromAnimation(
+      decodeGif(new Uint8Array(await file.arrayBuffer()), file.name),
+      file.name,
+    );
   const url = URL.createObjectURL(file);
   const video = file.type.startsWith('video/') || /\.(mp4|mov|webm|m4v|ogv|mkv)$/i.test(file.name);
   try {
@@ -49,6 +57,12 @@ export async function loadMedia(file: File): Promise<Media> {
       });
       if (!Number.isFinite(source.duration) || source.duration <= 0)
         throw new Error('The video needs a finite duration. Live streams are not supported yet.');
+      if (source.videoWidth * source.videoHeight > maxPixels) {
+        source.pause();
+        source.removeAttribute('src');
+        source.load();
+        throw new Error(`Use source frames smaller than ${maxPixels / 1_000_000} megapixels.`);
+      }
       const reference = document.createElement('canvas');
       reference.width = source.videoWidth;
       reference.height = source.videoHeight;
@@ -67,8 +81,8 @@ export async function loadMedia(file: File): Promise<Media> {
     const source = new Image();
     source.src = url;
     await source.decode();
-    if (source.width * source.height > 80_000_000)
-      throw new Error('Please use an image smaller than 80 megapixels.');
+    if (source.width * source.height > maxPixels)
+      throw new Error(`Please use an image smaller than ${maxPixels / 1_000_000} megapixels.`);
     return {
       name: file.name,
       kind: 'image',
@@ -82,6 +96,49 @@ export async function loadMedia(file: File): Promise<Media> {
     URL.revokeObjectURL(url);
     throw error;
   }
+}
+/** Editable frames are a first-class animation source, retaining RGBA and millisecond timing. */
+export function mediaFromAnimation(animation: SpriteDocument, name = animation.name): Media {
+  const source = document.createElement('canvas');
+  source.width = animation.width;
+  source.height = animation.height;
+  const media: Media = {
+    name,
+    kind: 'video',
+    source,
+    width: animation.width,
+    height: animation.height,
+    duration: animation.frames.reduce((total, frame) => total + frame.duration, 0) / 1000,
+    animation,
+  };
+  drawAnimationFrame(media, 0);
+  const reference = document.createElement('canvas');
+  reference.width = source.width;
+  reference.height = source.height;
+  reference.getContext('2d')!.drawImage(source, 0, 0);
+  media.reference = reference;
+  return media;
+}
+export function drawAnimationFrame(media: Media, time: number) {
+  if (!media.animation) return;
+  let remaining = Math.max(0, time * 1000);
+  let frame = media.animation.frames[media.animation.frames.length - 1];
+  for (const candidate of media.animation.frames) {
+    frame = candidate;
+    if (remaining < candidate.duration - 0.00001) break;
+    remaining -= candidate.duration;
+  }
+  (media.source as HTMLCanvasElement)
+    .getContext('2d')!
+    .putImageData(
+      new ImageData(new Uint8ClampedArray(frame.pixels), media.width, media.height),
+      0,
+      0,
+    );
+}
+export async function seekMedia(media: Media, time: number) {
+  if (media.animation) drawAnimationFrame(media, time);
+  else if (media.source instanceof HTMLVideoElement) await seekVideo(media.source, time);
 }
 export async function seekVideo(video: HTMLVideoElement, time: number) {
   if (Math.abs(video.currentTime - time) < 0.0001 && video.readyState >= 2) return;
@@ -116,6 +173,7 @@ export function renderMedia(
   time = 0,
   pixelSnap = false,
 ) {
+  if (media.animation) drawAnimationFrame(media, time);
   const canvas = document.createElement('canvas');
   canvas.width = settings.width;
   canvas.height = Math.max(1, Math.round((settings.width * media.height) / media.width));
@@ -125,15 +183,44 @@ export function renderMedia(
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
   const t = stabilization ? frameTransform(stabilization, time) : { x: 0, y: 0, scale: 1 };
+  let source = media.source;
+  let outputSettings = settings;
+  if (media.animation && settings.alpha === 'key') {
+    const original = (media.source as HTMLCanvasElement)
+      .getContext('2d')!
+      .getImageData(0, 0, media.width, media.height);
+    const keyed = document.createElement('canvas');
+    keyed.width = media.width;
+    keyed.height = media.height;
+    keyed.getContext('2d')!.putImageData(
+      new ImageData(
+        new Uint8ClampedArray(
+          prepare(original.data, {
+            ...defaults,
+            alpha: 'key',
+            keyColor: settings.keyColor,
+            keyTolerance: settings.keyTolerance,
+            keySoftness: settings.keySoftness,
+          }),
+        ),
+        media.width,
+        media.height,
+      ),
+      0,
+      0,
+    );
+    source = keyed;
+    outputSettings = { ...settings, alpha: 'preserve' };
+  }
   context.drawImage(
-    media.source,
+    source,
     pixelSnap ? Math.round(t.x * canvas.width) : t.x * canvas.width,
     pixelSnap ? Math.round(t.y * canvas.height) : t.y * canvas.height,
     canvas.width * t.scale,
     canvas.height * t.scale,
   );
   const raw = context.getImageData(0, 0, canvas.width, canvas.height);
-  const result = processPixels(raw.data, canvas.width, settings, lockedPalette);
+  const result = processPixels(raw.data, canvas.width, outputSettings, lockedPalette);
   context.putImageData(
     new ImageData(new Uint8ClampedArray(result.data), canvas.width, canvas.height),
     0,

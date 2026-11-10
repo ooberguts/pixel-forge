@@ -1,3 +1,4 @@
+import { showInspector } from './helpers/inspector';
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { unzipSync, strFromU8 } from 'fflate';
@@ -24,8 +25,11 @@ test('image conversion exports correct dimensions and source alpha', async ({ pa
     buffer: Buffer.from(fixture, 'base64'),
   });
   await expect(page.getByText('alpha.png', { exact: true })).toBeVisible();
+  await showInspector(page, 'Appearance');
   await page.getByRole('button', { name: '64 px', exact: true }).click();
+  await showInspector(page, 'Export');
   await page.getByLabel('Export scale', { exact: true }).selectOption('1');
+  await showInspector(page, 'Appearance');
   await page.getByLabel('Color palette', { exact: true }).selectOption('mono');
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export image', exact: true }).click();
@@ -59,11 +63,15 @@ test('video timeline, stationary anchors, chroma key and RGBA frame archive', as
     .getByLabel('Import image or video')
     .setInputFiles(path.resolve('tests/fixtures/green-screen.webm'));
   await expect(page.getByRole('heading', { name: 'Video editor', exact: true })).toBeVisible();
+  await showInspector(page, 'Appearance');
   await page.getByRole('button', { name: '64 px', exact: true }).click();
+  await showInspector(page, 'Appearance');
   await page.getByLabel('Color palette', { exact: true }).selectOption('original');
+  await showInspector(page, 'Background');
   await page.getByLabel('Alpha mode', { exact: true }).selectOption('key');
   await expect(page.getByRole('slider', { name: 'Key strength', exact: true })).toBeVisible();
   await expect(page.getByRole('slider', { name: 'Edge softness', exact: true })).toBeVisible();
+  await showInspector(page, 'Export');
   await page.getByLabel('Export scale', { exact: true }).selectOption('1');
   await page.getByRole('button', { name: 'Set anchor', exact: true }).click();
   const canvas = page.getByLabel('Media preview');
@@ -75,9 +83,14 @@ test('video timeline, stationary anchors, chroma key and RGBA frame archive', as
   await page.keyboard.press('ArrowRight');
   await page.getByRole('button', { name: 'Set anchor', exact: true }).click();
   await canvas.click({ position: { x: bounds!.width * 0.48, y: bounds!.height * 0.5 } });
+  await expect(page.getByRole('button', { name: 'Timing', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(page.getByLabel('Enable stabilization', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /Remove anchor at/ })).toHaveCount(2);
   const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Export animation', exact: true }).click();
+  await page.getByRole('button', { name: 'Export PNG sequence', exact: true }).click();
   const download = await downloadPromise;
   const zip = unzipSync(await readFile((await download.path())!));
   const manifest = JSON.parse(strFromU8(zip['manifest.json']));

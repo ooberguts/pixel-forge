@@ -35,7 +35,7 @@ jobs:
           TAG="v$VERSION"
           if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then exit 1; fi
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --draft --title "Pixel Forge $TAG" --notes-file docs/RELEASE_NOTES.md
+            gh release create "$TAG" --verify-tag --draft --title "Pixel Forge Studio Test $TAG" --notes-file docs/RELEASE_NOTES.md
           fi
           if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != "true" ]; then
             echo "This version is already published. Bump the version and create a new tag." >&2

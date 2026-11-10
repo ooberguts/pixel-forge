@@ -1,7 +1,7 @@
 {
   "name": "pixel-forge",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -12,7 +12,8 @@
     "tauri": "tauri",
     "desktop": "tauri dev",
     "configure:updater": "node scripts/configure-updater.mjs",
-    "version:set": "node scripts/set-version.mjs"
+    "version:set": "node scripts/set-version.mjs",
+    "mcp": "node scripts/pixel-forge-mcp.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",
@@ -21,6 +22,8 @@
     "@tauri-apps/plugin-process": "^2.3.0",
     "@tauri-apps/plugin-updater": "^2.9.0",
     "fflate": "^0.8.2",
+    "gifenc": "1.0.3",
+    "gifuct-js": "2.1.2",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

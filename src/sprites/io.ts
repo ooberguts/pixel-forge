@@ -18,7 +18,7 @@ export const safeName = (name: string) =>
     .trim()
     .replace(/[^a-zA-Z0-9_-]/g, '_')
     .slice(0, 80) || 'sprite';
-export async function exportAssetPack(doc: SpriteDocument, options: SheetOptions) {
+export async function buildAssetPack(doc: SpriteDocument, options: SheetOptions) {
   const base = safeName(doc.name),
     atlas = buildAtlasPixels(doc, options);
   const files: Record<string, Uint8Array> = {};
@@ -33,7 +33,14 @@ export async function exportAssetPack(doc: SpriteDocument, options: SheetOptions
   files['IMPORT.txt'] = strToU8(
     `Pixel Forge game asset pack\n\n${base}.png + ${base}.json: lossless RGBA atlas and Aseprite-style JSON array metadata.\nframes/: untrimmed, logical-resolution PNG sequence.\n\nAll frame coordinates are top-left pixels. Frame duration is milliseconds. Tag from/to indices are zero-based and inclusive. Pivot is relative to the untrimmed source canvas, not a trimmed atlas rectangle. The custom meta.pixelForge section documents layout and pixel-space pivot. No atlas frame is rotated. Reconstruct trimmed frames using spriteSourceSize and sourceSize. Empty frames retain their timing as transparent 1x1 atlas regions.\n\nUse nearest/point filtering, disable mipmaps and lossy/VRAM texture compression for crisp 2D pixel art. Keep one pixels-per-unit convention across your project and use an integer-scaled camera/viewport. Correct rendering still depends on your engine and camera. Power-of-two textures are optional, not a universal requirement.\n\nGodot: import PNG losslessly, select Nearest texture filtering on CanvasItem/project, and build SpriteFrames using the exported rectangles and durations.\nUnity: Sprite (2D and UI), Multiple, Point filtering, no mipmaps, uncompressed. Slice using JSON or use the untrimmed PNG sequence. Set Pixels Per Unit and consistent pivots.\nPhaser: load PNG+JSON as an atlas; Aseprite-style frameTags and durations are supplied for animation construction.\n\nThis is interoperable sprite-sheet JSON, not an .aseprite source document. Importer support varies; engine-specific scripts are not included.\n`,
   );
-  return await saveBytes(zipSync(files, { level: 0 }), `${base}-game-assets.zip`, 'zip');
+  return zipSync(files, { level: 0 });
+}
+export async function exportAssetPack(doc: SpriteDocument, options: SheetOptions) {
+  return saveBytes(
+    await buildAssetPack(doc, options),
+    `${safeName(doc.name)}-game-assets.zip`,
+    'zip',
+  );
 }
 export function encodeProject(doc: SpriteDocument) {
   validateDocument(doc);
@@ -76,6 +83,7 @@ export function decodeProject(bytes: Uint8Array): SpriteDocument {
     throw Error('Unsupported sprite project.');
   const doc: SpriteDocument = {
     name: data.name,
+    gifRepeat: data.gifRepeat,
     width: data.width,
     height: data.height,
     tags: data.tags,

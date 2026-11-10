@@ -29,7 +29,6 @@ import {
   X,
   Pipette,
   Save,
-  Gamepad2,
 } from 'lucide-react';
 import { defaults, PALETTES, rgbHex, type RGB, type Settings } from './engine';
 import {
@@ -39,7 +38,8 @@ import {
   pngBytes,
   renderMedia,
   scaleCanvas,
-  seekVideo,
+  seekMedia,
+  mediaFromAnimation,
   type Media,
 } from './media';
 import { desktop, saveBytes, checkUpdates } from './platform';
@@ -49,8 +49,20 @@ import type { Update } from '@tauri-apps/plugin-updater';
 import { APP_VERSION } from './version';
 import { startUpdatePolling } from './updater';
 import SpriteStudio from './sprites/SpriteStudio';
+import { Dialog, useConfirmation } from './Dialogs';
 import { sampleSprite, type SpriteDocument } from './sprites/model';
 import { captureClip, documentFromCanvas } from './sprites/capture';
+import { animationTimeline, adjacentAnimationTime } from './animationTiming';
+import { flushSync } from 'react-dom';
+import { validateSettings, validateTrim } from './converterSettings';
+import {
+  useAutomationBridge,
+  useAutomationHandlers,
+  executeAutomationCommand,
+  checkAutomationContext,
+} from './automation/bridge';
+import { assertParams, base64ToBytes, bytesToBase64, integer } from './automation/data';
+import AutomationPanel from './automation/AutomationPanel';
 
 const timeLabel = (t: number) =>
   `${Math.floor(t / 60)
@@ -121,12 +133,44 @@ function Section({
     </details>
   );
 }
+type SourceSnapshot = {
+  media: Media;
+  settings: Settings;
+  start: number;
+  end: number;
+  time: number;
+  fps: number;
+  scale: number;
+  format: VideoFormat;
+  stabilization: Stabilization;
+  sample: boolean;
+};
+
 export default function App() {
+  useAutomationBridge(desktop);
   const [workspace, setWorkspace] = useState<'converter' | 'sprites'>('converter');
   const [spriteDoc, setSpriteDoc] = useState<SpriteDocument>(() => sampleSprite());
+  const [spriteRevision, setSpriteRevision] = useState(0);
+  const [spriteOrigin, setSpriteOrigin] = useState<'sample' | 'converter' | 'gif'>('sample');
+  const [spriteHasWork, setSpriteHasWork] = useState(false);
+  const [spriteDirty, setSpriteDirty] = useState(false);
+  const { confirm, confirmation } = useConfirmation();
+  const [includeGrid, setIncludeGrid] = useState(false);
+  const [sample, setSample] = useState(true);
+  const shortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl';
   const [media, setMedia] = useState<Media>(() => demoMedia());
   const [settings, setSettings] = useState<Settings>({ ...defaults, palette: 'earth' });
-  const [tab, setTab] = useState<'image' | 'video'>('image');
+  const [propertyPanel, setPropertyPanel] = useState<
+    'appearance' | 'background' | 'timing' | 'export'
+  >('appearance');
+  const showProperties = (panel: typeof propertyPanel, sectionId?: string) => {
+    flushSync(() => setPropertyPanel(panel));
+    if (sectionId) {
+      const section = document.getElementById(sectionId);
+      section?.querySelector('details')?.setAttribute('open', '');
+      section?.scrollIntoView({ block: 'nearest' });
+    }
+  };
   const [view, setView] = useState<'pixel' | 'original'>('pixel');
   const [grid, setGrid] = useState(false),
     [background, setBackground] = useState<'checker' | 'dark' | 'light'>('checker');
@@ -145,6 +189,7 @@ export default function App() {
   const [busy, setBusy] = useState<Progress | null>(null),
     [loading, setLoading] = useState(false);
   const [format, setFormat] = useState<VideoFormat>('frames');
+  const [jobKind, setJobKind] = useState<'export' | 'transfer'>('export');
   const [showSettings, setShowSettings] = useState(false);
   const [ffmpeg, setFfmpeg] = useState(
     () => localStorage.getItem('pixel-forge.ffmpeg') || 'ffmpeg',
@@ -184,12 +229,86 @@ export default function App() {
     presetRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null),
     seekToken = useRef(0);
+  const pipeline = useRef<{
+    original?: SourceSnapshot;
+    link?: { media: Media; signature: string; doc: SpriteDocument };
+  }>({});
+  const activePropertyPanel =
+    propertyPanel === 'timing' && media.kind !== 'video' ? 'appearance' : propertyPanel;
+  const sourceSignature = JSON.stringify({ settings, start, end, fps, stabilization });
+  const matchingFrames =
+    pipeline.current.link?.media === media && pipeline.current.link?.signature === sourceSignature;
+  const snapshot = (): SourceSnapshot => ({
+    media,
+    settings,
+    start,
+    end,
+    time,
+    fps,
+    scale,
+    format,
+    stabilization,
+    sample,
+  });
+  const restoreSource = (saved: SourceSnapshot) => {
+    setPlaying(false);
+    setMedia(saved.media);
+    setSettings(saved.settings);
+    setStart(saved.start);
+    setEnd(saved.end);
+    setTime(saved.time);
+    setFps(saved.fps);
+    setScale(saved.scale);
+    setFormat(saved.format);
+    setStabilization(saved.stabilization);
+    setSample(saved.sample);
+
+    setView('pixel');
+    setZoom(1);
+  };
+  const returnToAdjustments = () => {
+    if (spriteHasWork && pipeline.current.link?.doc !== spriteDoc) {
+      if (!pipeline.current.original) pipeline.current.original = snapshot();
+      const source = mediaFromAnimation(spriteDoc);
+      const nextSettings = {
+        ...defaults,
+        width: spriteDoc.width,
+        palette: 'original' as const,
+        dither: 'none' as const,
+      };
+      setMedia(source);
+      setSettings(nextSettings);
+      setStart(0);
+      setEnd(source.duration);
+      setTime(0);
+      setStabilization(emptyStabilization);
+      setScale(1);
+      setSample(false);
+
+      setView('pixel');
+      setZoom(1);
+      pipeline.current.link = {
+        media: source,
+        doc: spriteDoc,
+        signature: JSON.stringify({
+          settings: nextSettings,
+          start: 0,
+          end: source.duration,
+          fps,
+          stabilization: emptyStabilization,
+        }),
+      };
+      setNotice('Your edited frames are now the adjustment source. The original source is kept.');
+    }
+    setWorkspace('converter');
+  };
   const videoMode = media.kind === 'video';
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setSettings((s) => ({ ...s, [key]: value }));
   const lockedPalette = useMemo(() => {
     if (!media.reference) return undefined;
-    return renderMedia({ ...media, source: media.reference }, settings).palette;
+    return renderMedia({ ...media, animation: undefined, source: media.reference }, settings)
+      .palette;
   }, [media, settings]);
 
   useEffect(() => {
@@ -203,13 +322,16 @@ export default function App() {
   }, [workspace]);
 
   useEffect(() => {
-    return () => disposeMedia(media);
+    return () => {
+      if (pipeline.current.original?.media !== media) disposeMedia(media);
+    };
   }, [media]);
   useEffect(() => {
     const id = setTimeout(() => setNotice(''), 6500);
     return () => clearTimeout(id);
   }, [notice]);
   useEffect(() => {
+    if (workspace !== 'converter') return;
     try {
       const rendered = renderMedia(
         media,
@@ -237,8 +359,20 @@ export default function App() {
   }, [media, settings, view, time, lockedPalette, stabilization, videoMode, picking, workspace]);
   useEffect(() => {
     if (!playing || !videoMode) return;
-    const video = media.source as HTMLVideoElement;
     let raf = 0;
+    if (media.animation) {
+      const began = performance.now(),
+        initialTime = Math.max(start, Math.min(time, end));
+      const tick = () => {
+        const next = Math.min(end, initialTime + (performance.now() - began) / 1000);
+        setTime(next);
+        if (next >= end) setPlaying(false);
+        else raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+      return () => cancelAnimationFrame(raf);
+    }
+    const video = media.source as HTMLVideoElement;
     video.currentTime = Math.max(start, Math.min(video.currentTime, end));
     const tick = () => {
       if (video.currentTime >= end - 0.015) {
@@ -265,83 +399,155 @@ export default function App() {
     };
   }, [playing, media, videoMode, start, end]);
 
-  const openFile = useCallback(async (file: File) => {
+  const chooseFile = () => {
+    if (loading || busy) return;
+    if (fileRef.current) fileRef.current.accept = 'image/*,video/*';
+    fileRef.current?.click();
+  };
+  const openFile = async (file: File) => {
+    if (loading || busy) return;
+    if (
+      !sample &&
+      !(await confirm({
+        title: 'Replace source media?',
+        description:
+          'This replaces the source and resets its trim and stabilization markers. Your frame edits are kept until you choose to replace them.',
+        action: 'Replace source',
+      }))
+    )
+      return;
     setLoading(true);
     setError('');
     setPlaying(false);
     setPicking(null);
     try {
       const loaded = await loadMedia(file);
+      if (pipeline.current.original) disposeMedia(pipeline.current.original.media);
+      pipeline.current.original = undefined;
+      pipeline.current.link = undefined;
       setMedia(loaded);
-      setTab(loaded.kind);
+      if (loaded.animation) {
+        setSettings({ ...defaults, width: loaded.width, palette: 'original', dither: 'none' });
+        setScale(1);
+        setFormat('gif');
+      }
+      setSample(false);
+
       setTime(0);
       setStart(0);
       setEnd(loaded.duration);
       setZoom(1);
       setStabilization(emptyStabilization);
       setView('pixel');
+      setWorkspace('converter');
       setNotice(
-        `${loaded.kind === 'video' ? 'Video' : 'Image'} opened. Everything stays on this device.`,
+        `${loaded.animation ? 'Animation' : loaded.kind === 'video' ? 'Video' : 'Image'} opened. Adjust it, edit frames if needed, then choose an output format.`,
       );
     } catch (err) {
       setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
-  }, []);
+  };
   const seek = async (value: number) => {
     if (!videoMode) return;
     setPlaying(false);
     const token = ++seekToken.current;
     try {
-      await seekVideo(
-        media.source as HTMLVideoElement,
-        Math.max(0, Math.min(value, media.duration - 0.001)),
-      );
-      if (token === seekToken.current) setTime((media.source as HTMLVideoElement).currentTime);
+      const next = Math.max(start, Math.min(value, end));
+      await seekMedia(media, next);
+      if (token === seekToken.current) setTime(next);
     } catch (err) {
       setError(errorMessage(err));
     }
   };
+  const stepFrame = (direction: -1 | 1) =>
+    seek(
+      media.animation
+        ? adjacentAnimationTime(media.animation, time, direction, start, end)
+        : time + direction / fps,
+    );
   const exportCurrent = useCallback(async () => {
-    if (!processedRef.current || busy) return;
+    if (!processedRef.current || busy || loading) return;
     setError('');
     try {
-      const canvas = scaleCanvas(processedRef.current, scale, grid);
+      const canvas = scaleCanvas(
+        renderMedia(media, settings, lockedPalette, stabilization, time).canvas,
+        scale,
+        includeGrid,
+      );
       const name = media.name.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
       if (await saveBytes(await pngBytes(canvas), `${name}-pixel.png`, 'png'))
-        setNotice('PNG exported with transparency.');
+        setNotice(
+          `PNG exported · ${canvas.width} × ${canvas.height} px${includeGrid && scale >= 4 ? ' · grid included' : ''}.`,
+        );
     } catch (err) {
       setError(errorMessage(err));
     }
-  }, [media, scale, grid, busy]);
+  }, [media, settings, lockedPalette, stabilization, time, scale, includeGrid, busy, loading]);
   useEffect(() => {
-    if (workspace !== 'converter') return;
+    if (workspace !== 'converter' || showSettings) return;
     const listener = (event: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') {
         event.preventDefault();
-        if (!busy) fileRef.current?.click();
+        if (!busy && !loading) {
+          if (fileRef.current) fileRef.current.accept = 'image/*,video/*';
+          fileRef.current?.click();
+        }
       }
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'e') {
         event.preventDefault();
         void exportCurrent();
       }
       if (event.key === 'Escape') setPicking(null);
+      if (event.metaKey || event.ctrlKey || event.altKey || busy || loading) return;
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.closest('input, select, textarea, button, summary, [contenteditable]')
+      )
+        return;
+      if (videoMode && event.code === 'Space') {
+        event.preventDefault();
+        if (time >= end - 0.05) void seek(start).then(() => setPlaying(true));
+        else setPlaying((p) => !p);
+      }
+      if (videoMode && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+        event.preventDefault();
+        void stepFrame(event.key === 'ArrowRight' ? 1 : -1);
+      }
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
-  }, [exportCurrent, busy, workspace]);
+  }, [
+    exportCurrent,
+    busy,
+    loading,
+    workspace,
+    showSettings,
+    videoMode,
+    media,
+    time,
+    end,
+    start,
+    fps,
+  ]);
   const beginVideoExport = async () => {
+    if (['gif', 'pack'].includes(format) && transferIssue) {
+      setError(transferIssue);
+      return;
+    }
     setPlaying(false);
     setError('');
     const abort = new AbortController();
     abortRef.current = abort;
+    setJobKind('export');
     setBusy({ fraction: 0, label: 'Preparing video…' });
     try {
       const saved = await exportVideo(
         media,
         settings,
-        palette,
+        lockedPalette ?? palette,
         { fps, start, end, scale, format, ffmpeg },
         stabilization,
         abort.signal,
@@ -362,7 +568,7 @@ export default function App() {
     }
   };
   const pickPoint = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!picking) return;
+    if (!picking || busy || loading) return;
     const canvas = event.currentTarget,
       rect = canvas.getBoundingClientRect();
     const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
@@ -392,11 +598,15 @@ export default function App() {
   };
   const savePreset = async () => {
     try {
-      await saveBytes(
+      const saved = await saveBytes(
         new TextEncoder().encode(JSON.stringify({ version: 1, settings }, null, 2)),
         'pixel-forge-preset.json',
         'json',
       );
+      if (saved)
+        setNotice(
+          'Preset saved. Includes conversion settings only; source, trim, and anchors are not saved.',
+        );
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -404,39 +614,8 @@ export default function App() {
   const loadPreset = async (file: File) => {
     try {
       const input = JSON.parse(await file.text());
-      const s = input.settings;
-      if (
-        input.version !== 1 ||
-        !s ||
-        !['original', 'adaptive', 'pico8', 'earth', 'gameboy', 'mono', 'custom'].includes(
-          s.palette,
-        ) ||
-        !['none', 'bayer', 'floyd'].includes(s.dither) ||
-        !['preserve', 'threshold', 'key', 'opaque'].includes(s.alpha)
-      )
-        throw new Error('This is not a Pixel Forge preset.');
-      const next = { ...defaults, ...s };
-      const ranges: Partial<Record<keyof Settings, [number, number]>> = {
-        width: [8, 512],
-        colors: [2, 64],
-        ditherStrength: [0, 100],
-        brightness: [-100, 100],
-        contrast: [-100, 100],
-        saturation: [-100, 100],
-        alphaThreshold: [0, 255],
-        keyTolerance: [0, 442],
-        keySoftness: [0, 200],
-      };
-      for (const [key, [min, max]] of Object.entries(ranges))
-        if (
-          typeof next[key] !== 'number' ||
-          !Number.isFinite(next[key]) ||
-          next[key] < min ||
-          next[key] > max
-        )
-          throw new Error('Preset contains an invalid ' + key + '.');
-      if (!/^#[0-9a-f]{6}$/i.test(next.keyColor) || typeof next.customPalette !== 'string')
-        throw new Error('Preset contains an invalid color.');
+      if (input.version !== 1) throw Error('This is not a Pixel Forge preset.');
+      const next = validateSettings(input.settings);
       setSettings(next);
       setNotice('Conversion preset loaded.');
     } catch (err) {
@@ -461,6 +640,14 @@ export default function App() {
   };
   const installUpdate = async () => {
     if (!update) return;
+    if (
+      !(await confirm({
+        title: 'Install update and restart?',
+        description: `${spriteDirty ? 'Your sprite project has unsaved changes. ' : ''}Restarting closes both workspaces, including the converter source, trim, and anchors. Cancel to save your work first.`,
+        action: 'Install & restart',
+      }))
+    )
+      return;
     setUpdateBusy(true);
     try {
       let total = 0,
@@ -487,35 +674,57 @@ export default function App() {
   };
   let frameCount = 0;
   try {
-    if (videoMode) frameCount = frameTimes(start, end, fps).length;
+    if (videoMode)
+      frameCount = media.animation
+        ? animationTimeline(media.animation, start, end).length
+        : frameTimes(start, end, fps).length;
   } catch {
     /* Validation displayed at export. */
   }
-  const outputHeight = Math.round((settings.width * media.height) / media.width);
+  const outputHeight = Math.max(1, Math.round((settings.width * media.height) / media.width));
   const displayOriginal = view === 'original' || picking !== null;
-  const chooseMedia = (kind: 'image' | 'video') => {
-    setTab(kind);
-    if (media.kind !== kind) {
-      if (fileRef.current) {
-        fileRef.current.accept =
-          kind === 'image' ? 'image/png,image/jpeg,image/webp,image/svg+xml' : 'video/*';
-        fileRef.current.click();
-      }
-    }
-  };
 
+  const transferIssue =
+    outputHeight > 512
+      ? 'Reduce pixel width: editable frames and GIF/game-pack exports support up to 512 × 512 px.'
+      : videoMode &&
+          (!frameCount ||
+            frameCount > 256 ||
+            settings.width * outputHeight * frameCount > 16_000_000)
+        ? 'Shorten the trim range or reduce FPS / pixel width. Editable frames and GIF/game-pack exports support 256 frames and 16 million total pixels.'
+        : '';
   const createGameAsset = async () => {
+    if (busy || loading) return;
+    if (matchingFrames) {
+      setPlaying(false);
+      setWorkspace('sprites');
+      return;
+    }
+    if (transferIssue) {
+      setError(transferIssue);
+      return;
+    }
     setPlaying(false);
+    if (
+      spriteHasWork &&
+      !(await confirm({
+        title: 'Replace edited frames?',
+        description: `Apply these adjustments to a new set of frames? This replaces “${spriteDoc.name}” and its undo history. ${spriteDirty ? 'It has unsaved changes. ' : ''}Cancel to keep your edits; you can resume them without replacing.`,
+        action: 'Replace frames',
+      }))
+    )
+      return;
     setError('');
     const controller = new AbortController();
     abortRef.current = controller;
-    setBusy({ fraction: 0, label: 'Preparing game asset…' });
+    setJobKind('transfer');
+    setBusy({ fraction: 0, label: 'Preparing editable frames…' });
     try {
       const document = videoMode
         ? await captureClip(
             media,
             settings,
-            palette,
+            lockedPalette ?? palette,
             stabilization,
             start,
             end,
@@ -523,948 +732,1397 @@ export default function App() {
             controller.signal,
             setBusy,
           )
-        : documentFromCanvas(processedRef.current!, media.name);
+        : documentFromCanvas(
+            renderMedia(media, settings, lockedPalette, stabilization, time).canvas,
+            media.name,
+          );
+      controller.signal.throwIfAborted();
+      pipeline.current.link = { media, signature: sourceSignature, doc: document };
       setSpriteDoc(document);
+      setSpriteOrigin('converter');
+      setSpriteRevision((r) => r + 1);
+      setSpriteHasWork(true);
+      setSpriteDirty(true);
       setWorkspace('sprites');
     } catch (error) {
       if (!controller.signal.aborted) setError(errorMessage(error));
+      else setNotice('Preparation cancelled. Your frame edits are unchanged.');
     } finally {
       setBusy(null);
       abortRef.current = null;
     }
   };
-  if (workspace === 'sprites')
-    return (
-      <SpriteStudio
-        initial={spriteDoc}
-        onChange={setSpriteDoc}
-        onBack={() => setWorkspace('converter')}
-      />
-    );
+  const automationVersion = useRef({
+    value: crypto.randomUUID(),
+    media,
+    settings,
+    start,
+    end,
+    fps,
+    stabilization,
+    time,
+  });
+  const previousVersion = automationVersion.current;
+  if (
+    previousVersion.media !== media ||
+    previousVersion.settings !== settings ||
+    previousVersion.start !== start ||
+    previousVersion.end !== end ||
+    previousVersion.fps !== fps ||
+    previousVersion.stabilization !== stabilization ||
+    previousVersion.time !== time
+  )
+    automationVersion.current = {
+      value: crypto.randomUUID(),
+      media,
+      settings,
+      start,
+      end,
+      fps,
+      stabilization,
+      time,
+    };
+  const converterState = () => ({
+    revision: automationVersion.current.value,
+    source: {
+      name: media.name,
+      kind: media.kind,
+      width: media.width,
+      height: media.height,
+      duration: media.duration,
+      timing: media.animation ? 'original' : 'sampled',
+      sample,
+    },
+    settings,
+    trim: { start, end },
+    fps,
+    time,
+    stabilization,
+    exportScale: scale,
+    output: { width: settings.width, height: outputHeight, frames: videoMode ? frameCount : 1 },
+    busy: !!busy || loading || playing || updateBusy || !!document.querySelector('dialog[open]'),
+  });
+  const assertConverterRevision = (expected: unknown) => {
+    if (expected !== automationVersion.current.value)
+      throw Error(
+        'Converter changed. Read converter.get_state and retry with its current revision.',
+      );
+  };
+  const assertAutomationReady = () => {
+    if (busy || loading || playing || updateBusy || document.querySelector('dialog[open]'))
+      throw Error('The editor is busy. Pause playback and close dialogs before making changes.');
+  };
+  useAutomationHandlers({
+    'app.get_state': async (params) => {
+      assertParams(params, []);
+      return {
+        version: APP_VERSION,
+        workspace,
+        converter: converterState(),
+        sprite: await executeAutomationCommand('sprite.get_state', {}),
+      };
+    },
+    'app.set_workspace': async (params, context) => {
+      assertParams(params, ['workspace']);
+      assertAutomationReady();
+      if (!['converter', 'sprites'].includes(String(params.workspace)))
+        throw Error('Workspace must be converter or sprites.');
+      const sprite = (await executeAutomationCommand('sprite.get_state', {})) as { busy: boolean };
+      if (sprite.busy) throw Error('The sprite editor is busy.');
+      checkAutomationContext(context);
+      flushSync(() => {
+        if (params.workspace === 'converter') returnToAdjustments();
+        else setWorkspace('sprites');
+      });
+      return { workspace: params.workspace };
+    },
+    'converter.get_state': (params) => {
+      assertParams(params, []);
+      return converterState();
+    },
+    'converter.preview': async (params, context) => {
+      assertParams(params, []);
+      const revision = automationVersion.current.value;
+      const snapshot = renderMedia(media, settings, palette, stabilization, time).canvas;
+      const bytes = await pngBytes(snapshot);
+      checkAutomationContext(context);
+      return {
+        name: 'conversion.png',
+        mimeType: 'image/png',
+        base64: bytesToBase64(bytes),
+        width: snapshot.width,
+        height: snapshot.height,
+        revision,
+      };
+    },
+    'converter.configure': (params, context) => {
+      assertParams(params, ['expectedRevision', 'settings', 'fps', 'trim']);
+      assertAutomationReady();
+      assertConverterRevision(params.expectedRevision);
+      const next =
+        params.settings === undefined ? settings : validateSettings(params.settings, settings);
+      const nextFps = params.fps === undefined ? fps : integer(params.fps, 'FPS', 6, 60);
+      if (media.animation && params.fps !== undefined && params.fps !== fps)
+        throw Error(
+          'This animation preserves original frame durations. Change timing with sprite.apply_edits.',
+        );
+      const trim =
+        params.trim === undefined ? { start, end } : validateTrim(params.trim, media.duration);
+      checkAutomationContext(context);
+      flushSync(() => {
+        setSettings(next);
+        setFps(nextFps);
+        setStart(trim.start);
+        setEnd(trim.end);
+        setNotice('AI connection updated conversion settings.');
+      });
+      return { revision: automationVersion.current.value };
+    },
+    'converter.import': async (params, context) => {
+      assertParams(params, ['expectedRevision', 'replace', 'name', 'mimeType', 'base64']);
+      assertAutomationReady();
+      assertConverterRevision(params.expectedRevision);
+      if (params.replace !== true)
+        throw Error('Set replace:true to replace the converter source and reset trim and anchors.');
+      if (typeof params.name !== 'string' || !params.name.trim() || params.name.length > 200)
+        throw Error('Provide a source name up to 200 characters.');
+      if (
+        !['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'video/webm', 'video/mp4'].includes(
+          String(params.mimeType),
+        )
+      )
+        throw Error('Use PNG, JPEG, WebP, GIF, WebM, or MP4.');
+      const bytes = base64ToBytes(params.base64);
+      setLoading(true);
+      let loaded: Media | undefined;
+      try {
+        loaded = await loadMedia(
+          new File([new Uint8Array(bytes)], params.name, { type: params.mimeType as string }),
+          32_000_000,
+        );
+        checkAutomationContext(context);
+        assertConverterRevision(params.expectedRevision);
+        if (loaded.width * loaded.height > 32_000_000)
+          throw Error('AI imports support source frames up to 32 megapixels.');
+        const next = loaded;
+        flushSync(() => {
+          if (pipeline.current.original) disposeMedia(pipeline.current.original.media);
+          pipeline.current.original = undefined;
+          pipeline.current.link = undefined;
+          setMedia(next);
+          if (next.animation) {
+            setSettings({ ...defaults, width: next.width, palette: 'original', dither: 'none' });
+            setScale(1);
+            setFormat('gif');
+          }
+          setSample(false);
+
+          setTime(0);
+          setStart(0);
+          setEnd(next.duration);
+          setStabilization(emptyStabilization);
+          setView('pixel');
+          setZoom(1);
+          setNotice('AI connection opened a converter source.');
+        });
+        loaded = undefined;
+        return { revision: automationVersion.current.value };
+      } finally {
+        if (loaded) disposeMedia(loaded);
+        flushSync(() => setLoading(false));
+      }
+    },
+    'converter.transfer': async (params, context) => {
+      assertParams(params, ['expectedRevision', 'expectedSpriteRevision', 'replace']);
+      assertAutomationReady();
+      assertConverterRevision(params.expectedRevision);
+      if (params.replace !== true)
+        throw Error('Set replace:true to send a new copy to Game assets.');
+      const target = (await executeAutomationCommand('sprite.get_state', {})) as {
+        revision: string;
+        busy: boolean;
+      };
+      if (target.revision !== params.expectedSpriteRevision || target.busy)
+        throw Error('Game assets changed or is busy. Read sprite.get_state before transferring.');
+      if (transferIssue) throw Error(transferIssue);
+      setJobKind('transfer');
+      setBusy({ fraction: 0, label: 'Preparing game asset for AI connection…' });
+      try {
+        const next = videoMode
+          ? await captureClip(
+              media,
+              settings,
+              lockedPalette ?? palette,
+              stabilization,
+              start,
+              end,
+              fps,
+              context.signal,
+              setBusy,
+            )
+          : documentFromCanvas(
+              renderMedia(media, settings, palette, stabilization, time).canvas,
+              media.name,
+            );
+        checkAutomationContext(context);
+        assertConverterRevision(params.expectedRevision);
+        const result = await executeAutomationCommand(
+          'sprite.replace_internal',
+          {
+            document: next,
+            expectedRevision: params.expectedSpriteRevision,
+          },
+          context,
+        );
+        pipeline.current.link = { media, signature: sourceSignature, doc: next };
+        flushSync(() => setWorkspace('sprites'));
+        return result;
+      } finally {
+        flushSync(() => setBusy(null));
+      }
+    },
+  });
   return (
-    <div
-      className="app"
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => {
-        event.preventDefault();
-        if (!busy && event.dataTransfer.files[0]) void openFile(event.dataTransfer.files[0]);
-      }}
-    >
-      <input
-        ref={fileRef}
-        type="file"
-        className="hidden"
-        aria-label="Import image or video"
-        accept="image/*,video/*"
-        onChange={(event) => {
-          if (event.target.files?.[0]) void openFile(event.target.files[0]);
-          event.target.value = '';
+    <>
+      <div hidden={workspace !== 'sprites'}>
+        <SpriteStudio
+          key={spriteRevision}
+          initial={spriteDoc}
+          visible={workspace === 'sprites'}
+          origin={spriteOrigin}
+          onDirtyChange={setSpriteDirty}
+          onChange={(doc) => {
+            setSpriteDoc(doc);
+            setSpriteHasWork(true);
+          }}
+          onBack={returnToAdjustments}
+          ffmpeg={ffmpeg}
+          outputFormat={format === 'frames' ? 'pack' : format}
+          onOutputFormatChange={setFormat}
+          onOpenSettings={() => setShowSettings(true)}
+          onOpenFile={chooseFile}
+          openingFile={loading}
+        />
+      </div>
+      <div
+        hidden={workspace !== 'converter'}
+        className="app"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          if (!busy && !loading && event.dataTransfer.files[0])
+            void openFile(event.dataTransfer.files[0]);
         }}
-      />
-      <input
-        ref={presetRef}
-        type="file"
-        className="hidden"
-        accept=".json"
-        onChange={(event) => {
-          if (event.target.files?.[0]) void loadPreset(event.target.files[0]);
-          event.target.value = '';
-        }}
-      />
-      <header className="topbar">
-        <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
-          <span className="brand-mark">
-            <i />
-            <i />
-            <i />
-            <i />
-            <i />
-            <i />
-          </span>
-          pixel<span className="brand-light">forge</span>
-          <span className="version">BETA</span>
-        </a>
-        <div className="header-divider" />
-        <div className="workspace-name">Local workspace</div>
-        <div className="topbar-right">
-          <button
-            className="button subtle small game-assets-button"
-            aria-label="Game assets"
-            disabled={!!busy}
-            onClick={() => {
-              setPlaying(false);
-              setWorkspace('sprites');
-            }}
-          >
-            <Gamepad2 size={15} /> Game assets
-          </button>
-          {update && (
-            <button className="button primary small" onClick={() => setShowSettings(true)}>
-              Update {update.version}
-            </button>
-          )}
-          <span className="local-badge">
-            <span /> Local processing
-          </span>
-          <button
-            className="icon-button"
-            aria-label="App settings"
-            onClick={() => setShowSettings(true)}
-          >
-            <Settings2 size={18} />
-          </button>
-          <button
-            className="button subtle small"
-            onClick={() => {
-              if (fileRef.current) fileRef.current.accept = 'image/*,video/*';
-              fileRef.current?.click();
-            }}
-            disabled={!!busy}
-          >
-            <FolderOpen size={15} /> Open file <kbd>⌘ O</kbd>
-          </button>
-        </div>
-      </header>
-      <div className="app-body">
-        <nav className="tool-rail" aria-label="Workspace tools">
-          <button
-            title="Image studio"
-            aria-label="Image studio"
-            className={tab === 'image' ? 'active' : ''}
-            onClick={() => chooseMedia('image')}
-            disabled={!!busy}
-          >
-            <ImageIcon size={21} />
-          </button>
-          <button
-            title="Video studio"
-            aria-label="Video studio"
-            className={tab === 'video' ? 'active' : ''}
-            onClick={() => chooseMedia('video')}
-            disabled={!!busy}
-          >
-            <Film size={21} />
-          </button>
-          <span className="rail-rule" />
-          <button
-            title="Palette controls"
-            aria-label="Palette controls"
-            onClick={() =>
-              document
-                .getElementById('palette-section')
-                ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-            }
-          >
-            <Palette size={20} />
-          </button>
-          <button
-            title="Chroma key controls"
-            aria-label="Chroma key controls"
-            onClick={() => {
-              const e = document.getElementById('alpha-section');
-              e?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-              e?.querySelector('details')?.setAttribute('open', '');
-            }}
-          >
-            <Layers2 size={20} />
-          </button>
-          <div className="rail-bottom">
-            <button
-              title="App settings"
-              aria-label="Settings"
-              onClick={() => setShowSettings(true)}
-            >
-              <SlidersHorizontal size={20} />
-            </button>
-            <div className="rail-avatar">pf</div>
-          </div>
-        </nav>
-        <main className="workspace">
-          <div className="workspace-heading">
-            <div>
-              <div className="eyebrow">
-                <span /> PIXEL FORGE
-              </div>
-              <h1>{videoMode ? 'Video editor' : 'Image editor'}</h1>
-              <p>
-                {media.width} × {media.height} source
-                {videoMode ? ` · ${timeLabel(media.duration)} duration` : ' · PNG, JPEG, WebP, SVG'}
-              </p>
-            </div>
-            <button
-              className="button import-button"
-              onClick={() => {
-                if (fileRef.current) fileRef.current.accept = 'image/*,video/*';
-                fileRef.current?.click();
-              }}
-              disabled={!!busy}
-            >
-              <Plus size={17} /> Import media
-            </button>
-          </div>
-          <div className="editor">
-            <div className="editor-toolbar">
-              <div className="file-title">
-                {videoMode ? <Film size={15} /> : <ImageIcon size={15} />}
-                <span>{media.name}</span>
-                <span className="file-type">{videoMode ? 'VIDEO' : 'IMAGE'}</span>
-              </div>
-              <div className="preview-switch" aria-label="Preview mode">
-                <button
-                  className={!displayOriginal ? 'selected' : ''}
-                  onClick={() => {
-                    setView('pixel');
-                    setPicking(null);
-                  }}
-                >
-                  Pixel art
-                </button>
-                <button
-                  className={displayOriginal ? 'selected' : ''}
-                  onClick={() => setView('original')}
-                >
-                  Original
-                </button>
-              </div>
-              <button
-                className={`icon-button ${grid ? 'is-on' : ''}`}
-                title="Toggle pixel grid"
-                aria-label="Toggle pixel grid"
-                aria-pressed={grid}
-                onClick={() => setGrid(!grid)}
-              >
-                <Grid2X2 size={17} />
-              </button>
-            </div>
-            <div
-              ref={canvasAreaRef}
-              className={`canvas-area background-${background} ${picking ? 'picking' : ''}`}
-            >
-              <div className="canvas-corner top-left" />
-              <div className="canvas-corner bottom-right" />
-              <div
-                className="canvas-art"
-                style={{
-                  width:
-                    Math.min(
-                      canvasBounds.width * 0.82,
-                      ((canvasBounds.height - 64) * media.width) / media.height,
-                      680,
-                    ) * zoom,
-                  aspectRatio: `${media.width}/${media.height}`,
-                }}
-              >
-                <canvas
-                  ref={canvasRef}
-                  onClick={pickPoint}
-                  className={displayOriginal ? 'original' : ''}
-                  aria-label="Media preview"
-                />
-                {grid && !displayOriginal && (
-                  <div
-                    className="pixel-grid"
-                    style={{ backgroundSize: `${100 / settings.width}% ${100 / outputHeight}%` }}
-                  />
-                )}
-                {videoMode &&
-                  stabilization.enabled &&
-                  stabilization.keyframes.length > 0 &&
-                  !displayOriginal && (
-                    <div
-                      className="anchor-marker"
-                      style={{
-                        left: `${stabilization.target.x * 100}%`,
-                        top: `${stabilization.target.y * 100}%`,
-                      }}
-                    >
-                      <Crosshair size={32} />
-                      <span>STATIONARY ANCHOR</span>
-                    </div>
-                  )}
-                <div className="art-dimension">
-                  {displayOriginal
-                    ? `${media.width} × ${media.height}`
-                    : `${settings.width} × ${outputHeight}`}{' '}
-                  px
-                </div>
-              </div>
-              {picking && (
-                <div className="pick-instruction">
-                  {picking === 'anchor' ? <Crosshair size={16} /> : <Pipette size={16} />}{' '}
-                  {picking === 'anchor'
-                    ? 'Click a feature to keep stationary'
-                    : 'Click the background color to remove'}
-                  <button aria-label="Cancel picking" onClick={() => setPicking(null)}>
-                    <X size={15} />
-                  </button>
-                </div>
-              )}
-              {loading && (
-                <div className="loading-overlay">
-                  <LoaderCircle className="spin" /> Opening media…
-                </div>
-              )}
-              {tab === 'video' && !videoMode && (
-                <div className="video-invite">
-                  <Film size={25} />
-                  <b>Open video</b>
-                  <span>
-                    Import a video to edit frames, set stabilization anchors, and export an
-                    animation.
-                  </span>
-                  <button className="button primary" onClick={() => chooseMedia('video')}>
-                    Open a video <ArrowRight size={15} />
-                  </button>
-                  <button className="text-button" onClick={() => setTab('image')}>
-                    Return to image studio
-                  </button>
-                </div>
-              )}
-            </div>
-            <div className="canvas-bottom">
-              <div className="canvas-status">
-                <span className="status-dot" />
-                {displayOriginal
-                  ? 'Original preview'
-                  : `${palette.length || 'Full'} colors · ${settings.width} × ${outputHeight} pixels`}
-              </div>
-              <div className="canvas-view-controls">
-                <button
-                  title="Change preview background"
-                  aria-label="Change preview background"
-                  className={`background-swatch ${background}`}
-                  onClick={() =>
-                    setBackground(
-                      background === 'checker'
-                        ? 'dark'
-                        : background === 'dark'
-                          ? 'light'
-                          : 'checker',
-                    )
-                  }
-                />
-                <span className="thin-divider" />
-                <button
-                  className="icon-button"
-                  aria-label="Zoom out"
-                  onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}
-                >
-                  <Minus size={14} />
-                </button>
-                <span>{Math.round(zoom * 100)}%</span>
-                <button
-                  className="icon-button"
-                  aria-label="Zoom in"
-                  onClick={() => setZoom(Math.min(2, zoom + 0.25))}
-                >
-                  <Plus size={14} />
-                </button>
-                <button className="icon-button" aria-label="Fit canvas" onClick={() => setZoom(1)}>
-                  <Maximize size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-          {videoMode ? (
-            <div className="timeline">
-              <div className="timeline-heading">
-                <div className="transport">
-                  <button
-                    className="icon-button"
-                    aria-label="Previous frame"
-                    onClick={() => void seek(time - 1 / fps)}
-                    disabled={!!busy}
-                  >
-                    <ArrowLeft size={15} />
-                  </button>
-                  <button
-                    className="play-button"
-                    aria-label={playing ? 'Pause video' : 'Play video'}
-                    onClick={() => {
-                      if (time >= end - 0.05) void seek(start).then(() => setPlaying(true));
-                      else setPlaying(!playing);
-                    }}
-                    disabled={!!busy}
-                  >
-                    {playing ? <Pause size={17} /> : <Play size={17} />}
-                  </button>
-                  <button
-                    className="icon-button"
-                    aria-label="Next frame"
-                    onClick={() => void seek(time + 1 / fps)}
-                    disabled={!!busy}
-                  >
-                    <ArrowRight size={15} />
-                  </button>
-                  <span className="timecode">
-                    {timeLabel(time)}
-                    <i>/</i>
-                    {timeLabel(media.duration)}
-                  </span>
-                </div>
-                <div className="timeline-actions">
-                  <button
-                    className={`button small ${picking === 'anchor' ? 'primary' : 'subtle'}`}
-                    onClick={() => {
-                      setPlaying(false);
-                      setPicking('anchor');
-                    }}
-                    disabled={!!busy}
-                  >
-                    <Crosshair size={14} /> Set anchor
-                  </button>
-                  <span className="frame-count">{frameCount.toLocaleString()} frames</span>
-                </div>
-              </div>
-              <div className="timeline-track">
-                <div className="timeline-ruler">
-                  {Array.from({ length: 7 }, (_, i) => (
-                    <span key={i}>{timeLabel((media.duration * i) / 6)}</span>
-                  ))}
-                </div>
-                <div className="clip-track">
-                  <Film size={13} />
-                  <span>{media.name}</span>
-                  <div
-                    className="trim-shade"
-                    style={{ width: `${(start / media.duration) * 100}%` }}
-                  />
-                  <div
-                    className="trim-shade right"
-                    style={{ width: `${((media.duration - end) / media.duration) * 100}%` }}
-                  />
-                </div>
-                <div className="anchor-track">
-                  <Crosshair size={12} />
-                  <span>Anchor</span>
-                  {stabilization.keyframes.map((k) => (
-                    <button
-                      key={k.time}
-                      title={`Anchor at ${timeLabel(k.time)}`}
-                      aria-label={`Seek to anchor at ${timeLabel(k.time)}`}
-                      style={{ left: `${(k.time / media.duration) * 100}%` }}
-                      onClick={() => void seek(k.time)}
-                    />
-                  ))}
-                </div>
-                <input
-                  className="timeline-scrubber"
-                  aria-label="Video timeline"
-                  type="range"
-                  min="0"
-                  max={media.duration}
-                  step={1 / fps}
-                  value={time}
-                  onChange={(e) => void seek(+e.target.value)}
-                  disabled={!!busy}
-                />
-                <div className="playhead" style={{ left: `${(time / media.duration) * 100}%` }} />
-              </div>
-              <p className="timeline-hint">
-                <MousePointer2 size={12} /> Seek to a frame, then set an anchor on the same feature.
-                Positions interpolate between keyframes.
-              </p>
-            </div>
-          ) : (
-            <div className="workshop-note">
-              <span className="note-icon">
-                <ImageIcon size={18} />
-              </span>
-              <div>
-                <b>Image conversion</b>
-                <p>
-                  Adjust resolution, palette, and transparency. Drag a file here to replace the
-                  source.
-                </p>
-              </div>
-              <span className="note-shortcut">PNG · JPG · WEBP · VIDEO</span>
-            </div>
-          )}
-          <div className="workspace-footer">
-            <span>
-              <ShieldCheck size={13} /> Processed on your device
+      >
+        <input
+          ref={fileRef}
+          type="file"
+          className="hidden"
+          aria-label="Import image or video"
+          accept="image/*,video/*"
+          onChange={(event) => {
+            if (event.target.files?.[0]) void openFile(event.target.files[0]);
+            event.target.value = '';
+          }}
+        />
+        <input
+          ref={presetRef}
+          type="file"
+          className="hidden"
+          accept=".json"
+          onChange={(event) => {
+            if (event.target.files?.[0]) void loadPreset(event.target.files[0]);
+            event.target.value = '';
+          }}
+        />
+        <header className="topbar">
+          <div className="brand" aria-label="Pixel Forge">
+            <span className="brand-mark">
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
             </span>
-            <span>
-              v{APP_VERSION} · {desktop ? 'Desktop' : 'Browser preview'}
-            </span>
+            pixel<span className="brand-light">forge</span>
+            <span className="version">BETA</span>
+          </div>
+          <div className="header-divider" />
+          <nav className="workspace-nav" aria-label="Workspaces">
+            <button aria-current="page">Adjust media</button>
             <button
+              aria-label="Edit frames"
+              disabled={!!busy || loading}
               onClick={() => {
                 setPlaying(false);
-                setMedia(demoMedia());
-                setTab('image');
-                setTime(0);
-                setStabilization(emptyStabilization);
+                setPicking(null);
+                if (sample) setWorkspace('sprites');
+                else void createGameAsset();
               }}
             >
-              Load sample <ArrowRight size={12} />
+              <Film size={15} /> Edit frames
+              {spriteDirty && <span className="unsaved-dot" title="Unsaved sprite project" />}
             </button>
-          </div>
-        </main>
-        <aside className="inspector">
-          <div className="inspector-title">
-            <SlidersHorizontal size={16} />
-            <h2>Conversion settings</h2>
+          </nav>
+          <div className="topbar-right">
+            {update && (
+              <button className="button primary small" onClick={() => setShowSettings(true)}>
+                Update {update.version}
+              </button>
+            )}
+            <span className="local-badge">
+              <span /> Local processing
+            </span>
             <button
               className="icon-button"
-              aria-label="Reset adjustments"
-              title="Reset adjustments"
-              disabled={!!busy}
-              onClick={() => {
-                setSettings({ ...defaults, palette: 'earth' });
-                setNotice('Conversion settings reset.');
-              }}
+              aria-label="App settings"
+              onClick={() => setShowSettings(true)}
             >
-              <RotateCcw size={15} />
+              <Settings2 size={18} />
+            </button>
+            <button
+              className="button subtle small"
+              onClick={chooseFile}
+              title="Open an image, video, or GIF"
+              disabled={!!busy || loading}
+            >
+              <FolderOpen size={15} /> Open file <kbd>{shortcut} O</kbd>
             </button>
           </div>
-          <div className="controls-scroll">
-            <fieldset className="controls-fields" disabled={!!busy || loading}>
-              <Section title="Resolution" icon={<ScanLine size={15} />}>
-                <Slider
-                  label="Pixel width"
-                  value={settings.width}
-                  min={8}
-                  max={512}
-                  suffix=" px"
-                  onChange={(v) => set('width', v)}
-                />
-                <div className="size-presets">
-                  {[32, 64, 128, 256].map((n) => (
-                    <button
-                      key={n}
-                      className={settings.width === n ? 'active' : ''}
-                      onClick={() => set('width', n)}
-                    >
-                      {n} px
-                    </button>
-                  ))}
-                </div>
-                <div className="info-line">
-                  <span>Aspect ratio locked</span>
-                  <span>
-                    {settings.width} × {outputHeight}
+        </header>
+        <div className="app-body">
+          <main className="workspace">
+            <div className="workspace-heading">
+              <div>
+                <h1>
+                  {media.animation
+                    ? media.animation.gifRepeat !== undefined
+                      ? 'GIF adjustments'
+                      : 'Frame adjustments'
+                    : videoMode
+                      ? 'Video editor'
+                      : 'Image editor'}
+                </h1>
+                <p>
+                  {media.width} × {media.height} source
+                  {videoMode
+                    ? ` · ${timeLabel(media.duration)} duration`
+                    : ' · PNG, JPEG, WebP, SVG'}
+                </p>
+              </div>
+            </div>
+            <div className={`workflow-bar ${sample ? 'is-sample' : 'document-actions'}`}>
+              <div>
+                <b>
+                  {sample
+                    ? 'Open a file to start'
+                    : `${videoMode ? `${frameCount} frames` : '1 frame'} · ${settings.width} × ${outputHeight} px`}
+                </b>
+                <p>
+                  {sample
+                    ? 'Open an image, GIF, or video. Adjust appearance, edit frames if needed, then choose an output.'
+                    : media.animation
+                      ? 'Original timing'
+                      : videoMode
+                        ? `${fps} FPS`
+                        : 'Still image'}
+                </p>
+                {transferIssue && <p className="inline-warning">{transferIssue}</p>}
+              </div>
+              <div className="workflow-actions">
+                {pipeline.current.original && (
+                  <button
+                    className="text-button"
+                    disabled={!!busy || loading}
+                    onClick={async () => {
+                      if (
+                        !matchingFrames &&
+                        !(await confirm({
+                          title: 'Return to original source?',
+                          description:
+                            'This restores the original media and its earlier adjustments. Adjustments made to the edited frames here will be discarded. Your pixel edits and frame timing are kept in Edit frames.',
+                          action: 'Restore original',
+                        }))
+                      )
+                        return;
+                      const original = pipeline.current.original!;
+                      pipeline.current.original = undefined;
+                      restoreSource(original);
+                    }}
+                  >
+                    Return to original source
+                  </button>
+                )}
+                {spriteHasWork && !matchingFrames && (
+                  <button
+                    className="text-button"
+                    disabled={!!busy || loading}
+                    onClick={() => setWorkspace('sprites')}
+                  >
+                    Resume frame edits
+                  </button>
+                )}
+                {!sample && (
+                  <button
+                    className="button subtle"
+                    disabled={!!busy || loading}
+                    onClick={() => {
+                      setPlaying(false);
+                      setSettings((s) => ({ ...s, alpha: 'key' }));
+                      setPicking('color');
+                      showProperties('background', 'alpha-section');
+                    }}
+                  >
+                    <Pipette size={16} />
+                    Remove background
+                  </button>
+                )}
+                {sample && (
+                  <button
+                    className="button primary"
+                    onClick={chooseFile}
+                    disabled={!!busy || loading}
+                    title="Open an image, video, or GIF"
+                  >
+                    <FolderOpen size={16} /> Open file
+                  </button>
+                )}
+                <button
+                  className="button subtle"
+                  disabled={!!busy || loading || !!transferIssue}
+                  onClick={() => void createGameAsset()}
+                >
+                  <Grid2X2 size={16} /> Edit pixels &amp; frames <ArrowRight size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="editor">
+              <div className="editor-toolbar">
+                <div className="file-title">
+                  {videoMode ? <Film size={15} /> : <ImageIcon size={15} />}
+                  <span title={media.name}>{media.name}</span>
+                  <span className="file-type">
+                    {media.animation
+                      ? media.animation.gifRepeat !== undefined
+                        ? 'GIF'
+                        : 'FRAMES'
+                      : videoMode
+                        ? 'VIDEO'
+                        : 'IMAGE'}
                   </span>
                 </div>
-              </Section>
-              <div id="palette-section">
-                <Section title="Color palette" icon={<Palette size={15} />}>
-                  <label className="select-field">
-                    <span>Palette</span>
-                    <select
-                      aria-label="Color palette"
-                      value={settings.palette}
-                      onChange={(e) => set('palette', e.target.value as Settings['palette'])}
-                    >
-                      <option value="original">Original colors</option>
-                      <option value="adaptive">Auto · from source</option>
-                      {Object.entries(PALETTES).map(([id, p]) => (
-                        <option key={id} value={id}>
-                          {p.name} · {p.colors.length} colors
-                        </option>
-                      ))}
-                      <option value="custom">Custom hex palette</option>
-                    </select>
-                  </label>
-                  {settings.palette === 'adaptive' && (
-                    <>
-                      <Slider
-                        label="Maximum colors"
-                        value={settings.colors}
-                        min={2}
-                        max={64}
-                        onChange={(v) => set('colors', v)}
-                      />
-                      {videoMode && (
-                        <p className="help-text">
-                          Palette is locked to the first source frame to reduce color flicker.
-                        </p>
-                      )}
-                    </>
-                  )}
-                  {settings.palette === 'custom' && (
-                    <label className="text-field">
-                      <span>Colors as #RRGGBB</span>
-                      <textarea
-                        aria-label="Custom palette colors"
-                        value={settings.customPalette}
-                        onChange={(e) => set('customPalette', e.target.value)}
-                      />
-                    </label>
-                  )}
-                  <div className="palette-swatches">
-                    {palette.slice(0, 32).map((p, i) => (
-                      <span key={i} style={{ background: rgbHex(p) }} title={rgbHex(p)} />
-                    ))}
-                  </div>
-                  <label className="select-field">
-                    <span>Dithering</span>
-                    <select
-                      aria-label="Dithering"
-                      value={settings.dither}
-                      onChange={(e) => set('dither', e.target.value as Settings['dither'])}
-                    >
-                      <option value="none">Off · clean edges</option>
-                      <option value="bayer">Bayer · ordered texture</option>
-                      <option value="floyd">Floyd–Steinberg</option>
-                    </select>
-                  </label>
-                  {settings.dither !== 'none' && (
-                    <Slider
-                      label="Dither amount"
-                      value={settings.ditherStrength}
-                      min={0}
-                      max={100}
-                      suffix="%"
-                      onChange={(v) => set('ditherStrength', v)}
+                <div className="preview-switch" aria-label="Preview mode">
+                  <button
+                    className={!displayOriginal ? 'selected' : ''}
+                    aria-pressed={!displayOriginal}
+                    onClick={() => {
+                      setView('pixel');
+                      setPicking(null);
+                    }}
+                  >
+                    Result
+                  </button>
+                  <button
+                    className={displayOriginal ? 'selected' : ''}
+                    aria-pressed={displayOriginal}
+                    onClick={() => setView('original')}
+                  >
+                    Original
+                  </button>
+                </div>
+                <button
+                  className={`icon-button ${grid ? 'is-on' : ''}`}
+                  title="Toggle pixel grid"
+                  aria-label="Toggle pixel grid"
+                  aria-pressed={grid}
+                  onClick={() => setGrid(!grid)}
+                >
+                  <Grid2X2 size={17} />
+                </button>
+              </div>
+              <div
+                ref={canvasAreaRef}
+                className={`canvas-area background-${background} ${picking ? 'picking' : ''}`}
+              >
+                <div className="canvas-corner top-left" />
+                <div className="canvas-corner bottom-right" />
+                <div
+                  className="canvas-art"
+                  style={{
+                    width:
+                      Math.min(
+                        canvasBounds.width * 0.82,
+                        ((canvasBounds.height - 64) * media.width) / media.height,
+                        680,
+                      ) * zoom,
+                    aspectRatio: `${media.width}/${media.height}`,
+                  }}
+                >
+                  <canvas
+                    ref={canvasRef}
+                    onClick={pickPoint}
+                    className={displayOriginal ? 'original' : ''}
+                    aria-label="Media preview"
+                    tabIndex={0}
+                  />
+                  {grid && !displayOriginal && (
+                    <div
+                      className="pixel-grid"
+                      style={{ backgroundSize: `${100 / settings.width}% ${100 / outputHeight}%` }}
                     />
                   )}
-                </Section>
-              </div>
-              <Section title="Fine adjustments" icon={<WandSparkles size={15} />} open={false}>
-                <Slider
-                  label="Brightness"
-                  value={settings.brightness}
-                  min={-100}
-                  max={100}
-                  onChange={(v) => set('brightness', v)}
-                />
-                <Slider
-                  label="Contrast"
-                  value={settings.contrast}
-                  min={-100}
-                  max={100}
-                  onChange={(v) => set('contrast', v)}
-                />
-                <Slider
-                  label="Saturation"
-                  value={settings.saturation}
-                  min={-100}
-                  max={100}
-                  onChange={(v) => set('saturation', v)}
-                />
-              </Section>
-              <div id="alpha-section">
-                <Section title="Transparency & chroma key" icon={<Layers2 size={15} />}>
-                  <label className="select-field">
-                    <span>Alpha mode</span>
-                    <select
-                      aria-label="Alpha mode"
-                      value={settings.alpha}
-                      onChange={(e) => set('alpha', e.target.value as Settings['alpha'])}
-                    >
-                      <option value="preserve">Preserve source alpha</option>
-                      <option value="key">Chroma key · remove a color</option>
-                      <option value="threshold">Hard alpha · sprite edges</option>
-                      <option value="opaque">Make opaque</option>
-                    </select>
-                  </label>
-                  {settings.alpha === 'key' && (
-                    <>
-                      <div className="key-color-row">
-                        <label>
-                          Key color{' '}
-                          <input
-                            aria-label="Key color"
-                            type="color"
-                            value={settings.keyColor}
-                            onChange={(e) => set('keyColor', e.target.value)}
-                          />
-                          <span>{settings.keyColor.toUpperCase()}</span>
-                        </label>
-                        <button
-                          className={`icon-button ${picking === 'color' ? 'is-on' : ''}`}
-                          aria-label="Sample key color"
-                          title="Sample from original"
-                          onClick={() => {
-                            setPlaying(false);
-                            setPicking('color');
-                          }}
-                        >
-                          <Pipette size={16} />
-                        </button>
+                  {videoMode &&
+                    stabilization.enabled &&
+                    stabilization.keyframes.length > 0 &&
+                    !displayOriginal && (
+                      <div
+                        className="anchor-marker"
+                        style={{
+                          left: `${stabilization.target.x * 100}%`,
+                          top: `${stabilization.target.y * 100}%`,
+                        }}
+                      >
+                        <Crosshair size={32} />
+                        <span>STATIONARY ANCHOR</span>
                       </div>
-                      <Slider
-                        label="Key strength"
-                        value={settings.keyTolerance}
-                        min={0}
-                        max={442}
-                        onChange={(v) => set('keyTolerance', v)}
-                      />
-                      <Slider
-                        label="Edge softness"
-                        value={settings.keySoftness}
-                        min={0}
-                        max={200}
-                        onChange={(v) => set('keySoftness', v)}
-                      />
-                      <p className="help-text">
-                        Sample the original background, then raise strength until it disappears.
-                        Softness feathers the edge.
-                      </p>
-                    </>
-                  )}
-                  {settings.alpha === 'threshold' && (
-                    <Slider
-                      label="Alpha cutoff"
-                      value={settings.alphaThreshold}
-                      min={0}
-                      max={255}
-                      onChange={(v) => set('alphaThreshold', v)}
-                    />
-                  )}
-                  <div className="alpha-note">
-                    <span className="mini-checker" /> RGBA transparency supported
+                    )}
+                  <div className="art-dimension">
+                    {displayOriginal
+                      ? `${media.width} × ${media.height}`
+                      : `${settings.width} × ${outputHeight}`}{' '}
+                    px
                   </div>
-                  {videoMode && (
-                    <p className="help-text">
-                      Video alpha depends on the source codec and system decoder. Color key can
-                      create alpha from a solid background.
-                    </p>
-                  )}
-                </Section>
+                </div>
+                {picking && (
+                  <div className="pick-instruction">
+                    {picking === 'anchor' ? <Crosshair size={16} /> : <Pipette size={16} />}{' '}
+                    {picking === 'anchor'
+                      ? 'Click a feature to keep stationary'
+                      : 'Click the background color to remove'}
+                    <kbd>Esc to cancel</kbd>
+                    <button aria-label="Cancel picking" onClick={() => setPicking(null)}>
+                      <X size={15} />
+                    </button>
+                  </div>
+                )}
+                {loading && (
+                  <div className="loading-overlay" role="status">
+                    <LoaderCircle className="spin" /> Opening media…
+                  </div>
+                )}
               </div>
-              {videoMode && (
-                <>
-                  <Section title="Anchor stabilization" icon={<Crosshair size={15} />}>
-                    <label className="toggle-label">
-                      <input
-                        aria-label="Enable stabilization"
-                        type="checkbox"
-                        checked={stabilization.enabled}
-                        onChange={(e) =>
-                          setStabilization((s) => ({ ...s, enabled: e.target.checked }))
-                        }
-                      />{' '}
-                      Stabilize around anchor
-                    </label>
-                    <p className="help-text">
-                      Mark the same feature on multiple frames. The first marker becomes the
-                      stationary target. Transparent edges show the frame movement.
-                    </p>
+              <div className="canvas-bottom">
+                <div className="canvas-status">
+                  <span className="status-dot" />
+                  {displayOriginal
+                    ? 'Original preview'
+                    : `${settings.palette === 'original' ? 'Original colors' : `${palette.length} colors`} · ${settings.width} × ${outputHeight} pixels`}
+                </div>
+                <div className="canvas-view-controls">
+                  <button
+                    title={`Preview background: ${background}. Click to cycle checkerboard, dark, and light.`}
+                    aria-label="Change preview background"
+                    className={`background-swatch ${background}`}
+                    onClick={() =>
+                      setBackground(
+                        background === 'checker'
+                          ? 'dark'
+                          : background === 'dark'
+                            ? 'light'
+                            : 'checker',
+                      )
+                    }
+                  />
+                  <span className="thin-divider" />
+                  <button
+                    className="icon-button"
+                    aria-label="Zoom out"
+                    onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}
+                  >
+                    <Minus size={14} />
+                  </button>
+                  <span>{Math.round(zoom * 100)}%</span>
+                  <button
+                    className="icon-button"
+                    aria-label="Zoom in"
+                    onClick={() => setZoom(Math.min(2, zoom + 0.25))}
+                  >
+                    <Plus size={14} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    aria-label="Fit canvas"
+                    onClick={() => setZoom(1)}
+                  >
+                    <Maximize size={14} />
+                  </button>
+                </div>
+              </div>
+            </div>
+            {videoMode ? (
+              <div
+                className={`timeline ${stabilization.enabled || stabilization.keyframes.length ? 'has-anchors' : ''}`}
+              >
+                <div className="timeline-heading">
+                  <div className="transport">
                     <button
-                      className="button subtle full"
+                      className="icon-button"
+                      aria-label="Previous frame"
+                      title="Previous frame (←)"
+                      onClick={() => void stepFrame(-1)}
+                      disabled={!!busy || loading}
+                    >
+                      <ArrowLeft size={15} />
+                    </button>
+                    <button
+                      className="play-button"
+                      aria-label={playing ? 'Pause video' : 'Play video'}
+                      title="Play / pause (Space)"
+                      onClick={() => {
+                        if (time >= end - 0.05) void seek(start).then(() => setPlaying(true));
+                        else setPlaying(!playing);
+                      }}
+                      disabled={!!busy || loading}
+                    >
+                      {playing ? <Pause size={17} /> : <Play size={17} />}
+                    </button>
+                    <button
+                      className="icon-button"
+                      aria-label="Next frame"
+                      title="Next frame (→)"
+                      onClick={() => void stepFrame(1)}
+                      disabled={!!busy || loading}
+                    >
+                      <ArrowRight size={15} />
+                    </button>
+                    <span className="timecode">
+                      {timeLabel(time)}
+                      <i>/</i>
+                      {timeLabel(media.duration)}
+                    </span>
+                  </div>
+                  <div className="timeline-actions">
+                    <button
+                      className="button small subtle"
+                      onClick={() => showProperties('timing', 'clip-timing')}
+                    >
+                      Trim &amp; timing
+                    </button>
+                    <button
+                      className={`button small ${picking === 'anchor' ? 'primary' : 'subtle'}`}
                       onClick={() => {
                         setPlaying(false);
                         setPicking('anchor');
+                        showProperties('timing', 'anchor-settings');
                       }}
+                      disabled={!!busy || loading}
                     >
-                      <Crosshair size={14} />{' '}
-                      {stabilization.keyframes.length
-                        ? 'Add anchor keyframe'
-                        : 'Place stationary marker'}
+                      <Crosshair size={14} /> Set anchor
                     </button>
-                    <Slider
-                      label="Stabilization zoom"
-                      min={1}
-                      max={2}
-                      step={0.05}
-                      suffix="×"
-                      value={stabilization.zoom}
-                      onChange={(v) => setStabilization((s) => ({ ...s, zoom: v }))}
+                    <span className="frame-count">{frameCount.toLocaleString()} frames</span>
+                  </div>
+                </div>
+                <div className="timeline-track">
+                  <div className="timeline-ruler">
+                    {Array.from({ length: 7 }, (_, i) => (
+                      <span key={i}>{timeLabel((media.duration * i) / 6)}</span>
+                    ))}
+                  </div>
+                  <div className="clip-track">
+                    <Film size={13} />
+                    <span>{media.name}</span>
+                    <div
+                      className="trim-shade"
+                      style={{ width: `${(start / media.duration) * 100}%` }}
                     />
-                    <div className="keyframe-list">
-                      {stabilization.keyframes.map((k) => (
-                        <div key={k.time}>
-                          <button className="text-button" onClick={() => void seek(k.time)}>
-                            <span className="key-diamond" /> {timeLabel(k.time)}
-                          </button>
-                          <button
-                            className="icon-button"
-                            aria-label={`Remove anchor at ${timeLabel(k.time)}`}
-                            onClick={() =>
-                              setStabilization((s) => ({
-                                ...s,
-                                keyframes: s.keyframes.filter((f) => f.time !== k.time),
-                              }))
-                            }
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
+                    <div
+                      className="trim-shade right"
+                      style={{ width: `${((media.duration - end) / media.duration) * 100}%` }}
+                    />
+                  </div>
+                  <div className="anchor-track">
+                    <Crosshair size={12} />
+                    <span>Anchor</span>
+                    {stabilization.keyframes.map((k) => (
+                      <button
+                        key={k.time}
+                        title={`Anchor at ${timeLabel(k.time)}`}
+                        aria-label={`Seek to anchor at ${timeLabel(k.time)}`}
+                        style={{ left: `${(k.time / media.duration) * 100}%` }}
+                        onClick={() => void seek(k.time)}
+                      />
+                    ))}
+                  </div>
+                  <input
+                    className="timeline-scrubber"
+                    aria-label="Video timeline"
+                    type="range"
+                    min="0"
+                    max={media.duration}
+                    step={media.animation ? 0.001 : 1 / fps}
+                    value={time}
+                    onChange={(e) => void seek(+e.target.value)}
+                    disabled={!!busy || loading}
+                  />
+                  <div className="playhead" style={{ left: `${(time / media.duration) * 100}%` }} />
+                </div>
+                <p className="timeline-hint">
+                  <MousePointer2 size={12} /> Space to play / pause · ← / → previous / next frame
+                  {stabilization.enabled && ' · Anchors keep a feature stationary'}
+                </p>
+              </div>
+            ) : null}
+            <div className="workspace-footer">
+              <span>
+                <ShieldCheck size={13} /> Processed on your device
+              </span>
+              <span>
+                v{APP_VERSION} · {desktop ? 'Desktop' : 'Browser preview'}
+              </span>
+              <button
+                disabled={!!busy || loading}
+                onClick={async () => {
+                  if (
+                    !sample &&
+                    !(await confirm({
+                      title: 'Load the sample image?',
+                      description:
+                        'This replaces the source media and resets its trim and stabilization markers. Your frame edits are kept.',
+                      action: 'Load sample',
+                    }))
+                  )
+                    return;
+                  setPlaying(false);
+                  setPicking(null);
+                  setSample(true);
+                  setMedia(demoMedia());
+
+                  setTime(0);
+                  setStart(0);
+                  setEnd(0);
+                  setStabilization(emptyStabilization);
+                }}
+              >
+                Load sample <ArrowRight size={12} />
+              </button>
+            </div>
+          </main>
+          <aside className="inspector">
+            <div className="inspector-title">
+              <SlidersHorizontal size={16} />
+              <h2>Media properties</h2>
+              <button
+                className="icon-button"
+                aria-label="Reset adjustments"
+                title="Reset adjustments"
+                disabled={!!busy || loading}
+                onClick={() => {
+                  setSettings(
+                    sample
+                      ? { ...defaults, palette: 'earth' }
+                      : {
+                          ...defaults,
+                          width: Math.min(512, media.width),
+                          palette: 'original',
+                          dither: 'none',
+                        },
+                  );
+                  setNotice(
+                    sample
+                      ? 'Sample adjustments reset.'
+                      : 'Appearance and background reset. Trim and frame edits are kept.',
+                  );
+                }}
+              >
+                <RotateCcw size={15} />
+              </button>
+            </div>
+            <nav className="inspector-tabs" aria-label="Media properties">
+              {(
+                [
+                  ['appearance', 'Appearance'],
+                  ['background', 'Background'],
+                  ...(videoMode ? [['timing', 'Timing']] : []),
+                  ['export', 'Export'],
+                ] as const
+              ).map(([panel, label]) => (
+                <button
+                  key={panel}
+                  aria-pressed={activePropertyPanel === panel}
+                  aria-controls={`media-${panel}`}
+                  onClick={() => setPropertyPanel(panel as typeof propertyPanel)}
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+            <div className="controls-scroll">
+              <fieldset className="controls-fields" disabled={!!busy || loading}>
+                <div
+                  id="media-appearance"
+                  className="inspector-tabpanel"
+                  hidden={activePropertyPanel !== 'appearance'}
+                >
+                  <Section title="Resolution" icon={<ScanLine size={15} />}>
+                    <Slider
+                      label="Pixel width"
+                      value={settings.width}
+                      min={8}
+                      max={512}
+                      suffix=" px"
+                      onChange={(v) => set('width', v)}
+                    />
+                    <div className="size-presets">
+                      {[32, 64, 128, 256].map((n) => (
+                        <button
+                          key={n}
+                          className={settings.width === n ? 'active' : ''}
+                          aria-pressed={settings.width === n}
+                          onClick={() => set('width', n)}
+                        >
+                          {n} px
+                        </button>
                       ))}
                     </div>
-                    {stabilization.keyframes.length > 0 && (
+                    <button
+                      className="text-button"
+                      disabled={media.width > 512 || settings.width === media.width}
+                      title={
+                        media.width > 512
+                          ? 'The working pixel canvas supports widths up to 512 px.'
+                          : 'Use the source pixel dimensions without resizing.'
+                      }
+                      onClick={() => set('width', media.width)}
+                    >
+                      Original size · {media.width} × {media.height}
+                    </button>
+                    <div className="info-line">
+                      <span>Aspect ratio locked</span>
+                      <span>
+                        {settings.width} × {outputHeight}
+                      </span>
+                    </div>
+                  </Section>
+                  <div id="palette-section">
+                    <Section title="Color palette" icon={<Palette size={15} />}>
+                      <label className="select-field">
+                        <span>Palette</span>
+                        <select
+                          aria-label="Color palette"
+                          value={settings.palette}
+                          onChange={(e) => set('palette', e.target.value as Settings['palette'])}
+                        >
+                          <option value="original">Original colors</option>
+                          <option value="adaptive">Auto · from source</option>
+                          {Object.entries(PALETTES).map(([id, p]) => (
+                            <option key={id} value={id}>
+                              {p.name} · {p.colors.length} colors
+                            </option>
+                          ))}
+                          <option value="custom">Custom hex palette</option>
+                        </select>
+                      </label>
+                      {settings.palette === 'adaptive' && (
+                        <>
+                          <Slider
+                            label="Maximum colors"
+                            value={settings.colors}
+                            min={2}
+                            max={64}
+                            onChange={(v) => set('colors', v)}
+                          />
+                          {videoMode && (
+                            <p className="help-text">
+                              Palette is locked to the first source frame to reduce color flicker.
+                            </p>
+                          )}
+                        </>
+                      )}
+                      {settings.palette === 'custom' && (
+                        <label className="text-field">
+                          <span>Colors as #RRGGBB</span>
+                          <textarea
+                            aria-label="Custom palette colors"
+                            value={settings.customPalette}
+                            onChange={(e) => set('customPalette', e.target.value)}
+                          />
+                        </label>
+                      )}
+                      <div className="palette-swatches">
+                        {palette.slice(0, 32).map((p, i) => (
+                          <span key={i} style={{ background: rgbHex(p) }} title={rgbHex(p)} />
+                        ))}
+                      </div>
+                      <label className="select-field">
+                        <span>Dithering</span>
+                        <select
+                          aria-label="Dithering"
+                          value={settings.dither}
+                          onChange={(e) => set('dither', e.target.value as Settings['dither'])}
+                        >
+                          <option value="none">Off · clean edges</option>
+                          <option value="bayer">Bayer · ordered texture</option>
+                          <option value="floyd">Floyd–Steinberg</option>
+                        </select>
+                      </label>
+                      {settings.dither !== 'none' && (
+                        <Slider
+                          label="Dither amount"
+                          value={settings.ditherStrength}
+                          min={0}
+                          max={100}
+                          suffix="%"
+                          onChange={(v) => set('ditherStrength', v)}
+                        />
+                      )}
+                    </Section>
+                  </div>
+                  <Section title="Fine adjustments" icon={<WandSparkles size={15} />} open={false}>
+                    <Slider
+                      label="Brightness"
+                      value={settings.brightness}
+                      min={-100}
+                      max={100}
+                      onChange={(v) => set('brightness', v)}
+                    />
+                    <Slider
+                      label="Contrast"
+                      value={settings.contrast}
+                      min={-100}
+                      max={100}
+                      onChange={(v) => set('contrast', v)}
+                    />
+                    <Slider
+                      label="Saturation"
+                      value={settings.saturation}
+                      min={-100}
+                      max={100}
+                      onChange={(v) => set('saturation', v)}
+                    />
+                  </Section>
+                </div>
+                <div
+                  id="media-background"
+                  className="inspector-tabpanel"
+                  hidden={propertyPanel !== 'background'}
+                >
+                  <div className="panel-intro">
+                    <h3>Remove a background</h3>
+                    <p>
+                      Pick a solid color in the preview, then refine its edges. The checkerboard
+                      shows transparent pixels.
+                    </p>
+                    {settings.alpha !== 'key' && (
                       <button
-                        className="text-button muted"
-                        onClick={() => setStabilization(emptyStabilization)}
+                        className="button subtle full"
+                        disabled={!!busy || loading}
+                        onClick={() => {
+                          setPlaying(false);
+                          setSettings((s) => ({ ...s, alpha: 'key' }));
+                          setPicking('color');
+                          showProperties('background', 'alpha-section');
+                        }}
                       >
-                        Clear anchor track
+                        <Pipette size={15} /> Pick color to remove
                       </button>
                     )}
-                  </Section>
-                  <Section title="Clip & timing" icon={<Film size={15} />}>
-                    <div className="trim-inputs">
-                      <label>
-                        In (seconds)
-                        <input
-                          aria-label="Trim start"
-                          type="number"
-                          min="0"
-                          max={end}
-                          step="0.01"
-                          value={start}
-                          onChange={(e) =>
-                            setStart(Math.max(0, Math.min(end - 0.01, +e.target.value)))
-                          }
-                        />
+                  </div>
+                  <div id="alpha-section">
+                    <Section title="Transparency & chroma key" icon={<Layers2 size={15} />}>
+                      <label className="select-field">
+                        <span>Background treatment</span>
+                        <select
+                          aria-label="Alpha mode"
+                          value={settings.alpha}
+                          onChange={(e) => set('alpha', e.target.value as Settings['alpha'])}
+                        >
+                          <option value="preserve">Keep existing transparency</option>
+                          <option value="key">Remove a color · chroma key</option>
+                          <option value="threshold">Hard edges · pixel art</option>
+                          <option value="opaque">Solid background</option>
+                        </select>
                       </label>
-                      <label>
-                        Out (seconds)
-                        <input
-                          aria-label="Trim end"
-                          type="number"
-                          min={start}
-                          max={media.duration}
-                          step="0.01"
-                          value={end}
-                          onChange={(e) =>
-                            setEnd(
-                              Math.min(media.duration, Math.max(start + 0.01, +e.target.value)),
-                            )
-                          }
+                      {settings.alpha === 'key' && (
+                        <>
+                          <div className="key-color-row">
+                            <label>
+                              Key color{' '}
+                              <input
+                                aria-label="Key color"
+                                type="color"
+                                value={settings.keyColor}
+                                onChange={(e) => set('keyColor', e.target.value)}
+                              />
+                              <span>{settings.keyColor.toUpperCase()}</span>
+                            </label>
+                            <button
+                              className={`button subtle small ${picking === 'color' ? 'is-on' : ''}`}
+                              aria-pressed={picking === 'color'}
+                              aria-label="Sample key color"
+                              title="Sample from original"
+                              onClick={() => {
+                                setPlaying(false);
+                                setPicking('color');
+                              }}
+                            >
+                              <Pipette size={16} /> Sample
+                            </button>
+                          </div>
+                          <Slider
+                            label="Key strength"
+                            value={settings.keyTolerance}
+                            min={0}
+                            max={442}
+                            onChange={(v) => set('keyTolerance', v)}
+                          />
+                          <Slider
+                            label="Edge softness"
+                            value={settings.keySoftness}
+                            min={0}
+                            max={200}
+                            onChange={(v) => set('keySoftness', v)}
+                          />
+                          <p className="help-text">
+                            Sample the original background, then raise strength until it disappears.
+                            Softness feathers the edge.
+                          </p>
+                        </>
+                      )}
+                      {settings.alpha === 'threshold' && (
+                        <Slider
+                          label="Alpha cutoff"
+                          value={settings.alphaThreshold}
+                          min={0}
+                          max={255}
+                          onChange={(v) => set('alphaThreshold', v)}
                         />
-                      </label>
-                    </div>
-                    <label className="select-field">
-                      <span>Export frame rate</span>
-                      <select
-                        aria-label="Export frame rate"
-                        value={fps}
-                        onChange={(e) => setFps(+e.target.value)}
+                      )}
+                      <div className="alpha-note">
+                        <span className="mini-checker" /> RGBA transparency supported
+                      </div>
+                      {videoMode && !media.animation && (
+                        <p className="help-text">
+                          Video alpha depends on the source codec and system decoder. Color key can
+                          create alpha from a solid background.
+                        </p>
+                      )}
+                    </Section>
+                  </div>
+                </div>
+                {videoMode && (
+                  <div
+                    id="media-timing"
+                    className="inspector-tabpanel"
+                    hidden={propertyPanel !== 'timing'}
+                  >
+                    <div id="anchor-settings">
+                      <Section
+                        title="Anchor stabilization"
+                        icon={<Crosshair size={15} />}
+                        open={false}
                       >
-                        {[6, 8, 12, 15, 24, 30, 60].map((n) => (
-                          <option key={n} value={n}>
-                            {n} FPS
-                          </option>
-                        ))}
-                      </select>
+                        <label className="toggle-label">
+                          <input
+                            aria-label="Enable stabilization"
+                            type="checkbox"
+                            checked={stabilization.enabled}
+                            onChange={(e) =>
+                              setStabilization((s) => ({ ...s, enabled: e.target.checked }))
+                            }
+                          />{' '}
+                          Stabilize around anchor
+                        </label>
+                        <p className="help-text">
+                          Mark the same feature on multiple frames. The first marker becomes the
+                          stationary target. This moves video pixels; the sprite pivot is set
+                          separately when editing frames.
+                        </p>
+                        <button
+                          className="button subtle full"
+                          onClick={() => {
+                            setPlaying(false);
+                            setPicking('anchor');
+                          }}
+                        >
+                          <Crosshair size={14} />{' '}
+                          {stabilization.keyframes.length
+                            ? 'Add anchor keyframe'
+                            : 'Place stationary marker'}
+                        </button>
+                        <Slider
+                          label="Stabilization zoom"
+                          min={1}
+                          max={2}
+                          step={0.05}
+                          suffix="×"
+                          value={stabilization.zoom}
+                          onChange={(v) => setStabilization((s) => ({ ...s, zoom: v }))}
+                        />
+                        <div className="keyframe-list">
+                          {stabilization.keyframes.map((k) => (
+                            <div key={k.time}>
+                              <button className="text-button" onClick={() => void seek(k.time)}>
+                                <span className="key-diamond" /> {timeLabel(k.time)}
+                              </button>
+                              <button
+                                className="icon-button"
+                                aria-label={`Remove anchor at ${timeLabel(k.time)}`}
+                                onClick={() =>
+                                  setStabilization((s) => ({
+                                    ...s,
+                                    keyframes: s.keyframes.filter((f) => f.time !== k.time),
+                                  }))
+                                }
+                              >
+                                <X size={12} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                        {stabilization.keyframes.length > 0 && (
+                          <button
+                            className="text-button muted"
+                            onClick={() => setStabilization(emptyStabilization)}
+                          >
+                            Clear anchor track
+                          </button>
+                        )}
+                      </Section>
+                    </div>
+                    <div id="clip-timing">
+                      <Section title="Clip & timing" icon={<Film size={15} />}>
+                        <div className="trim-inputs">
+                          <label>
+                            In (seconds)
+                            <input
+                              aria-label="Trim start"
+                              type="number"
+                              min="0"
+                              max={end}
+                              step="0.01"
+                              value={start}
+                              onChange={(e) =>
+                                setStart(Math.max(0, Math.min(end - 0.01, +e.target.value)))
+                              }
+                            />
+                          </label>
+                          <label>
+                            Out (seconds)
+                            <input
+                              aria-label="Trim end"
+                              type="number"
+                              min={start}
+                              max={media.duration}
+                              step="0.01"
+                              value={end}
+                              onChange={(e) =>
+                                setEnd(
+                                  Math.min(media.duration, Math.max(start + 0.01, +e.target.value)),
+                                )
+                              }
+                            />
+                          </label>
+                        </div>
+                        <label className="select-field">
+                          <span>{media.animation ? 'Frame timing' : 'Export frame rate'}</span>
+                          <select
+                            aria-label="Export frame rate"
+                            value={media.animation ? 'original' : fps}
+                            disabled={!!media.animation}
+                            onChange={(e) => setFps(+e.target.value)}
+                          >
+                            {media.animation && (
+                              <option value="original">Original frame durations</option>
+                            )}
+                            {![6, 8, 12, 15, 24, 30, 60].includes(fps) && (
+                              <option value={fps}>{fps} FPS</option>
+                            )}
+                            {[6, 8, 12, 15, 24, 30, 60].map((n) => (
+                              <option key={n} value={n}>
+                                {n} FPS
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <p className="help-text">
+                          {media.animation
+                            ? 'Original frame durations are preserved. Change individual timing in Edit frames.'
+                            : 'Video is sampled at this frame rate. Exports are silent; GIF and game packs support up to 256 editable frames.'}
+                        </p>
+                      </Section>
+                    </div>
+                  </div>
+                )}
+                <div className="preset-row" hidden={activePropertyPanel !== 'appearance'}>
+                  <button className="text-button" onClick={() => void savePreset()}>
+                    <Save size={13} /> Save preset
+                  </button>
+                  <button className="text-button" onClick={() => presetRef.current?.click()}>
+                    Load preset <ChevronRight size={12} />
+                  </button>
+                </div>
+              </fieldset>
+              <div
+                id="media-export"
+                className="export-options inspector-tabpanel"
+                hidden={propertyPanel !== 'export'}
+              >
+                <div className="export-heading">
+                  <span>EXPORT</span>
+                  <span className="png-badge">{videoMode ? 'MOTION' : 'PNG'}</span>
+                </div>
+                {videoMode && (
+                  <label className="select-field">
+                    <span>Output format</span>
+                    <select
+                      aria-label="Video export format"
+                      value={format}
+                      onChange={(e) => setFormat(e.target.value as VideoFormat)}
+                      disabled={!!busy || loading}
+                    >
+                      <option value="gif">Animated GIF (.gif)</option>
+                      <option value="pack">Game asset pack (.zip)</option>
+                      <option value="frames">RGBA PNG sequence (.zip)</option>
+                      <option value="webm" disabled={!desktop}>
+                        WebM · transparent video (.webm)
+                      </option>
+                      <option value="mov" disabled={!desktop}>
+                        MOV · transparent video (.mov)
+                      </option>
+                    </select>
+                  </label>
+                )}
+                {videoMode && !desktop && (
+                  <p className="help-text">MOV and WebM export are available in the desktop app.</p>
+                )}
+                <label className="select-field">
+                  <span>Export scale</span>
+                  <select
+                    aria-label="Export scale"
+                    value={videoMode && ['gif', 'pack'].includes(format) ? 1 : scale}
+                    onChange={(e) => setScale(+e.target.value)}
+                    disabled={!!busy || loading || (videoMode && ['gif', 'pack'].includes(format))}
+                  >
+                    {[1, 2, 4, 8].map((n) => (
+                      <option key={n} value={n}>
+                        {n}× · {settings.width * n} × {outputHeight * n} px
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="export-description">
+                  {videoMode
+                    ? format === 'gif'
+                      ? `Animated GIF · ${frameCount} frames · ${settings.width} × ${outputHeight} px at 1×. Uses trim and appearance settings; GIF transparency is on/off.`
+                      : format === 'pack'
+                        ? `ZIP · PNG sprite sheet + JSON + PNG frames at 1×. Includes timing, transparency and pivot. Edit frames for sheet settings.`
+                        : format === 'frames'
+                          ? `ZIP · ${frameCount} PNG frames + timing/settings JSON. Uses trim, ${media.animation ? 'original frame timing' : 'FPS'}, and scale.`
+                          : `${format === 'webm' ? 'WebM with alpha' : 'MOV ProRes 4444'} · silent video. Uses trim, ${media.animation ? 'original frame timing' : 'FPS'}, and scale; requires FFmpeg.`
+                    : `One PNG · ${settings.width * scale} × ${outputHeight * scale} px. Palette, adjustments, and alpha mode applied.`}
+                </p>
+                {(!videoMode || !['gif', 'pack'].includes(format)) && (
+                  <>
+                    <label className="toggle-label export-grid">
+                      <input
+                        type="checkbox"
+                        checked={includeGrid && scale >= 4}
+                        disabled={!!busy || loading || scale < 4}
+                        onChange={(e) => setIncludeGrid(e.target.checked)}
+                      />{' '}
+                      Include grid in {videoMode ? 'single-frame PNG' : 'PNG'}
                     </label>
-                    <p className="help-text">
-                      Exports sample every 1 / FPS seconds. Up to 1,800 frames per export. Silent
-                      output.
-                    </p>
-                  </Section>
+                    {scale < 4 && (
+                      <p className="help-text">PNG grid is available at 4× or 8× scale.</p>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="export-panel export-dock">
+              <button
+                className="output-summary"
+                onClick={() => setPropertyPanel('export')}
+                aria-label="Show export settings"
+              >
+                <span>
+                  <b>
+                    {videoMode
+                      ? {
+                          gif: 'Animated GIF',
+                          pack: 'Game asset pack',
+                          frames: 'PNG sequence',
+                          mov: 'MOV video',
+                          webm: 'WebM video',
+                        }[format]
+                      : 'PNG image'}
+                  </b>
+                  <small>
+                    {settings.width * (videoMode && ['gif', 'pack'].includes(format) ? 1 : scale)} ×{' '}
+                    {outputHeight * (videoMode && ['gif', 'pack'].includes(format) ? 1 : scale)} px
+                    {videoMode ? ` · ${frameCount} frames` : ''}
+                  </small>
+                </span>
+                <Settings2 size={15} />
+              </button>
+              {busy ? (
+                <div className="export-progress" role="status">
+                  <div>
+                    <LoaderCircle className="spin" size={14} />
+                    <span>{busy.label}</span>
+                  </div>
+                  <progress
+                    aria-label={jobKind === 'transfer' ? 'Transfer progress' : 'Export progress'}
+                    max="1"
+                    value={busy.fraction}
+                  />
+                  <button
+                    className="text-button"
+                    disabled={busy.encoding}
+                    onClick={() => abortRef.current?.abort()}
+                  >
+                    {jobKind === 'transfer' ? 'Cancel transfer' : 'Cancel export'}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <button
+                    className="button primary export-button"
+                    onClick={() => void (videoMode ? beginVideoExport() : exportCurrent())}
+                    disabled={loading}
+                  >
+                    <ArrowDownToLine size={16} />
+                    {videoMode
+                      ? {
+                          gif: 'Export GIF',
+                          pack: 'Export game asset pack',
+                          frames: 'Export PNG sequence',
+                          mov: 'Export MOV',
+                          webm: 'Export WebM',
+                        }[format]
+                      : 'Export image'}
+                    <ArrowRight size={16} />
+                  </button>
+                  {videoMode ? (
+                    <button
+                      className="text-button export-frame"
+                      onClick={() => void exportCurrent()}
+                    >
+                      Export this frame as PNG
+                    </button>
+                  ) : (
+                    <p className="export-note">Export PNG: {shortcut} Shift E · grid is optional</p>
+                  )}
                 </>
               )}
-              <div className="preset-row">
-                <button className="text-button" onClick={() => void savePreset()}>
-                  <Save size={13} /> Save preset
-                </button>
-                <button className="text-button" onClick={() => presetRef.current?.click()}>
-                  Load preset <ChevronRight size={12} />
-                </button>
-              </div>
-            </fieldset>
-          </div>
-          <div className="export-panel">
-            <div className="export-heading">
-              <span>EXPORT</span>
-              <span className="png-badge">{videoMode ? 'MOTION' : 'PNG'}</span>
             </div>
-            <label className="select-field">
-              <span>Export scale</span>
-              <select
-                aria-label="Export scale"
-                value={scale}
-                onChange={(e) => setScale(+e.target.value)}
-                disabled={!!busy}
-              >
-                {[1, 2, 4, 8].map((n) => (
-                  <option key={n} value={n}>
-                    {n}× · {settings.width * n} × {outputHeight * n} px
-                  </option>
-                ))}
-              </select>
-            </label>
-            {videoMode && (
-              <label className="select-field">
-                <span>Format</span>
-                <select
-                  aria-label="Video export format"
-                  value={format}
-                  onChange={(e) => setFormat(e.target.value as VideoFormat)}
-                  disabled={!!busy}
-                >
-                  <option value="frames">RGBA PNG sequence (.zip)</option>
-                  <option value="webm" disabled={!desktop}>
-                    WebM · VP9 alpha (FFmpeg)
-                  </option>
-                  <option value="mov" disabled={!desktop}>
-                    MOV · ProRes 4444 (FFmpeg)
-                  </option>
-                </select>
-              </label>
-            )}
-            {busy ? (
-              <div className="export-progress">
-                <div>
-                  <LoaderCircle className="spin" size={14} />
-                  <span>{busy.label}</span>
-                </div>
-                <progress max="1" value={busy.fraction} />
-                <button
-                  className="text-button"
-                  disabled={busy.encoding}
-                  onClick={() => abortRef.current?.abort()}
-                >
-                  Cancel export
-                </button>
-              </div>
-            ) : (
-              <>
-                <button
-                  className="button primary export-button"
-                  onClick={() => void (videoMode ? beginVideoExport() : exportCurrent())}
-                  disabled={loading}
-                >
-                  <ArrowDownToLine size={16} />
-                  {videoMode ? 'Export animation' : 'Export image'}
-                  <ArrowRight size={16} />
-                </button>
-                {videoMode ? (
-                  <button className="text-button export-frame" onClick={() => void exportCurrent()}>
-                    Export this frame as PNG
-                  </button>
-                ) : (
-                  <p className="export-note">PNG · nearest-neighbor scaling · RGBA</p>
-                )}
-                <button
-                  className="button subtle full"
-                  disabled={loading}
-                  onClick={() => void createGameAsset()}
-                >
-                  <Gamepad2 size={14} />
-                  {videoMode ? 'Create sprite animation' : 'Edit as game sprite'}
-                </button>
-              </>
-            )}
-          </div>
-        </aside>
-      </div>
-      {(notice || error) && (
-        <div className={`toast ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}>
-          {error ? <X size={16} /> : <Check size={16} />}
-          <span>{error || notice}</span>
-          <button
-            aria-label="Dismiss notification"
-            onClick={() => {
-              setError('');
-              setNotice('');
-            }}
-          >
-            <X size={14} />
-          </button>
+          </aside>
         </div>
-      )}
+      </div>
       {showSettings && (
-        <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
-          <div
-            className="settings-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="App settings"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <Dialog title="App settings" onClose={() => setShowSettings(false)}>
+          <div className="settings-modal">
             <div className="modal-heading">
               <div>
                 <div className="eyebrow">PIXEL FORGE · {APP_VERSION}</div>
@@ -1478,6 +2136,8 @@ export default function App() {
                 <X size={19} />
               </button>
             </div>
+            <AutomationPanel />
+            <hr />
             <h3>Native video encoding</h3>
             <p>
               Desktop WebM and ProRes exports use a separately installed FFmpeg executable. PNG
@@ -1552,8 +2212,24 @@ export default function App() {
               <span>{desktop ? 'Tauri desktop' : 'Browser preview'}</span>
             </div>
           </div>
+        </Dialog>
+      )}
+      {(error || (workspace === 'converter' && notice)) && (
+        <div className={`toast ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'}>
+          {error ? <X size={16} /> : <Check size={16} />}
+          <span>{error || notice}</span>
+          <button
+            aria-label="Dismiss notification"
+            onClick={() => {
+              setError('');
+              setNotice('');
+            }}
+          >
+            <X size={14} />
+          </button>
         </div>
       )}
-    </div>
+      {confirmation}
+    </>
   );
 }

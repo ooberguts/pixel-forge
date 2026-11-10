@@ -1,0 +1,229 @@
+.utility-dialog.frame-conversion-dialog {
+  width: min(1040px, calc(100vw - 32px));
+  overflow: hidden;
+  padding: 22px;
+}
+.frame-conversion {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 86px);
+  min-height: 0;
+}
+.frame-conversion .modal-heading {
+  align-items: flex-start;
+  flex-shrink: 0;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.frame-conversion .modal-heading h2 {
+  margin: 0 0 6px;
+}
+.frame-conversion .modal-heading p {
+  margin: 0;
+}
+.frame-conversion-scroll {
+  min-height: 0;
+  overflow: auto;
+}
+.frame-conversion-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 330px;
+  gap: 22px;
+  padding: 2px;
+}
+.frame-conversion-previews {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.frame-conversion figure {
+  margin: 0;
+  min-width: 0;
+}
+.frame-conversion figcaption {
+  color: #e0e0e0;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.frame-conversion figure > div {
+  height: 268px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #242424;
+  border: 1px solid #666;
+  padding: 12px;
+}
+.frame-conversion canvas {
+  max-width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+  background: repeating-conic-gradient(#555 0% 25%, #383838 0% 50%) 0 0 / 12px 12px;
+}
+.frame-conversion .frame-sampling-help {
+  min-height: 42px;
+  font-size: 12px;
+  margin: 10px 0;
+}
+.frame-conversion-playback {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.frame-conversion-playback > label {
+  flex: 1;
+  min-width: 0;
+}
+.frame-conversion-playback .button {
+  min-width: 76px;
+}
+.frame-conversion .help-text {
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 8px 0;
+}
+.frame-conversion-preview-panel > .help-text {
+  margin-top: 18px;
+}
+.frame-conversion-options {
+  border-left: 1px solid #626262;
+  padding-left: 20px;
+}
+.frame-conversion-options h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+.frame-conversion-options section + section {
+  border-top: 1px solid #626262;
+  padding-top: 16px;
+  margin-top: 18px;
+}
+.frame-size-presets {
+  display: flex;
+  gap: 5px;
+  margin: 12px 0;
+  flex-wrap: wrap;
+}
+.frame-size-presets .button {
+  padding: 6px 8px;
+  font-size: 11px;
+}
+.frame-conversion .frame-size-presets [aria-pressed='true'] {
+  background: #325e85;
+  border-color: #8cc3f4;
+  color: #fff;
+}
+.frame-conversion .frame-width-field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.frame-conversion .frame-width-field input {
+  width: 65px;
+  min-width: 0;
+}
+.frame-width-field > span:last-child {
+  color: #c5c5c5;
+}
+.frame-conversion-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+.frame-conversion-fields select {
+  width: 100%;
+  min-width: 0;
+}
+.frame-background-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.frame-background-toggle input {
+  accent-color: #78b6ed;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+.frame-conversion-key {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.frame-key-color {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.frame-key-color input {
+  height: 28px;
+  width: 35px;
+  padding: 2px;
+}
+.frame-key-color output {
+  font-variant-numeric: tabular-nums;
+  color: #ddd;
+}
+.frame-conversion-key .help-text {
+  margin: 0;
+}
+.frame-conversion-footer {
+  flex-shrink: 0;
+  border-top: 1px solid #666;
+  margin-top: 18px;
+  padding-top: 14px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.frame-conversion-feedback {
+  flex: 1;
+  min-width: 0;
+}
+.frame-conversion-feedback p {
+  margin: 0;
+  font-size: 12px;
+}
+.frame-conversion .dialog-actions {
+  margin: 0;
+  flex-shrink: 0;
+}
+.frame-conversion [role='alert'] {
+  color: #ffb8b8;
+}
+.sprite-conversion-actions > div {
+  display: flex;
+}
+.sprite-conversion-actions .button {
+  flex: 1;
+  padding: 9px 8px;
+  white-space: normal;
+}
+.sprite-conversion-actions .help-text {
+  margin: 0;
+}
+@media (max-width: 760px) {
+  .frame-conversion-body {
+    grid-template-columns: 1fr;
+  }
+  .frame-conversion-options {
+    border-left: 0;
+    padding-left: 0;
+  }
+  .frame-conversion figure > div {
+    height: 250px;
+  }
+  .frame-conversion-footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+}

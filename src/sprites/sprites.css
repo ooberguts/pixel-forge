@@ -478,3 +478,482 @@
     gap: 10px;
   }
 }
+
+/* Editing state stays legible at the minimum desktop window size. */
+.sprite-title b {
+  font-size: 23px;
+  letter-spacing: -1px;
+}
+.document-state {
+  font-size: 11px;
+  color: #d2bf90;
+  margin-bottom: 7px;
+}
+.workspace-guidance {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #aebfa3;
+  margin: -5px 0 15px;
+}
+.sprite-heading {
+  margin-bottom: 15px;
+}
+.sprite-heading p,
+.sprite-name,
+.sprite-field-grid label,
+.sprite-duration-row > label,
+.sprite-shortcuts {
+  font-size: 12px;
+  color: #afc09f;
+}
+.sprite-section h2 {
+  font-size: 14px;
+}
+.sprite-section .toggle-label,
+.sprite-small-actions .text-button {
+  font-size: 12px;
+}
+.sprite-name input,
+.sprite-field-grid input,
+.sprite-duration-row input,
+.sprite-duration-row select,
+.sprite-transport select {
+  font-size: 12px;
+}
+.sprite-toolbar {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+}
+.sprite-tools {
+  flex-wrap: wrap;
+}
+.sprite-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  color: #b0c29d;
+}
+.sprite-tool:hover:not(:disabled) {
+  background: #35442c;
+}
+.sprite-tool.is-on {
+  border-color: #8fa76e;
+  color: #d7f2b3;
+  background: #3a4c2d;
+}
+.tool-guidance {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 9px 13px;
+  color: #b8c9ab;
+  background: #1d261a;
+  border-bottom: 1px solid #35442c;
+}
+.sprite-viewport {
+  place-items: safe center;
+}
+.sprite-frame-strip {
+  position: relative;
+  scrollbar-color: #6a8051 #1d261a;
+  scrollbar-width: thin;
+}
+.sprite-frame > span {
+  font-size: 11px;
+}
+.sprite-frame small {
+  font-size: 10px;
+}
+.sprite-frame.active {
+  box-shadow: inset 0 3px #c7ec95;
+}
+.sprite-palette {
+  padding: 13px 2px;
+}
+.sprite-palette > button {
+  width: 22px;
+  height: 22px;
+}
+.sprite-palette > span {
+  font-size: 11px;
+}
+.sprite-tag-list small {
+  font-size: 11px;
+  color: #b2c59f;
+}
+.sprite-section .pivot-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #edbe7d;
+}
+.sprite-export {
+  padding: 16px 18px;
+}
+.sprite-export > span {
+  font-size: 11px;
+  line-height: 1.5;
+}
+.sprite-working {
+  position: fixed;
+  bottom: 20px;
+  left: 24px;
+  background: #303f27;
+  border: 1px solid #748c58;
+  border-radius: 6px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+@media (min-width: 801px) {
+  .sprite-main {
+    padding: 22px 24px;
+  }
+  .sprite-inspector {
+    width: 320px;
+  }
+  .sprite-viewport {
+    height: clamp(220px, 32vh, 440px);
+  }
+  .sprite-section {
+    padding: 18px;
+  }
+}
+@media (min-width: 801px) and (max-width: 1100px) {
+  .sprite-main {
+    padding: 18px 16px;
+  }
+  .sprite-inspector {
+    width: 290px;
+  }
+  .sprite-toolbar {
+    flex-direction: column;
+  }
+  .sprite-transport {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 800px) {
+  .sprite-toolbar {
+    flex-direction: column;
+  }
+  .sprite-shell .topbar {
+    padding: 12px;
+  }
+  .sprite-tools .icon-button {
+    width: 32px;
+  }
+}
+.sprite-title b .brand-light {
+  font-size: inherit;
+  color: #b0b8b0;
+  letter-spacing: inherit;
+}
+@media (min-width: 801px) {
+  .sprite-viewport {
+    height: clamp(160px, calc(100vh - 720px), 420px);
+  }
+}
+
+/* Frame workspace: one canvas, one timeline, focused properties. */
+.sprite-shell .sprite-heading {
+  flex: 0 0 auto;
+  gap: 16px;
+  margin: 0;
+  padding: 0 0 12px;
+}
+.sprite-shell .sprite-document-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 5px;
+}
+.sprite-shell .sprite-heading h1 {
+  font-size: 16px;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  margin: 0;
+}
+.sprite-shell .document-state {
+  font-size: 11px;
+  margin: 0;
+  color: #b7b7b7;
+}
+.sprite-shell .sprite-heading p {
+  font-size: 11px;
+}
+.sprite-shell .sprite-name {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.sprite-shell .sprite-name input {
+  width: 160px;
+  padding: 7px 8px;
+}
+.sprite-shell .sprite-inspector {
+  position: static;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #333;
+  width: 304px;
+}
+.sprite-shell .sprite-inspector-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #666 transparent;
+}
+.sprite-shell .inspector-tabpanel[hidden] {
+  display: none;
+}
+.sprite-shell .sprite-section {
+  padding: 16px;
+  gap: 12px;
+}
+.sprite-shell .sprite-section.sprite-details {
+  display: block;
+  padding: 0;
+}
+.sprite-shell .sprite-section h2 {
+  font-size: 12px;
+  font-weight: 600;
+}
+.sprite-shell .sprite-palette {
+  padding: 2px 0;
+  gap: 8px;
+}
+.sprite-shell .sprite-palette > button {
+  width: 23px;
+  height: 23px;
+}
+.sprite-shell .sprite-palette > span {
+  width: 100%;
+  margin: 4px 0 0;
+  color: #c5c5c5;
+}
+.sprite-shell .sprite-export-options {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+.sprite-shell .sprite-export {
+  padding: 12px;
+  gap: 10px;
+  max-height: none;
+  overflow: visible;
+  background: #373737;
+  border-top: 1px solid #222;
+}
+.sprite-shell .sprite-export-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 3px 4px;
+  color: #ededed;
+  text-align: left;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.sprite-shell .sprite-export-summary:hover {
+  background: #444;
+}
+.sprite-shell .sprite-export-summary span {
+  display: grid;
+  gap: 5px;
+}
+.sprite-shell .sprite-export-summary small {
+  font-size: 11px;
+  color: #bdbdbd;
+}
+.sprite-shell .sprite-export .button {
+  min-height: 36px;
+}
+.sprite-shell .sprite-shortcut-list {
+  gap: 12px;
+  color: #c6c6c6;
+  font-size: 11px;
+}
+.sprite-shell .sprite-shortcut-list kbd {
+  display: inline-block;
+  background: #424242;
+  border: 1px solid #595959;
+  border-radius: 3px;
+  padding: 2px 4px;
+  font: inherit;
+  color: #eee;
+}
+.sprite-shell .sprite-bulk-timing {
+  padding: 0;
+  border: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.sprite-shell .sprite-bulk-timing label {
+  display: flex;
+  justify-content: space-between;
+}
+.sprite-shell .sprite-timeline {
+  flex: 0 0 auto;
+  margin-top: 10px;
+}
+.sprite-shell .sprite-transport {
+  padding: 6px 10px;
+  gap: 10px;
+}
+.sprite-shell .sprite-frame-strip {
+  padding: 10px;
+  gap: 6px;
+}
+.sprite-shell .sprite-frame {
+  min-width: 60px;
+  padding: 5px 7px;
+  gap: 3px;
+}
+.sprite-shell .sprite-frame canvas {
+  width: 38px;
+  height: 38px;
+}
+.sprite-shell .sprite-frame > span {
+  font-size: 10px;
+}
+.sprite-shell .sprite-frame small {
+  font-size: 10px;
+}
+.sprite-shell .sprite-timeline .sprite-duration-row {
+  padding: 5px 10px;
+  gap: 8px;
+}
+.sprite-shell .sprite-duration-row input {
+  padding: 4px 6px;
+}
+.sprite-shell .sprite-duration-row > label {
+  font-size: 11px;
+}
+.sprite-shell .tool-guidance {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.sprite-shell .sprite-conversion-actions .button {
+  width: 100%;
+  font-size: 12px;
+}
+@media (min-width: 801px) {
+  .sprite-shell .sprite-body {
+    height: calc(100dvh - 48px);
+    min-height: 540px;
+    overflow: hidden;
+  }
+  .sprite-shell .sprite-main {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 14px;
+  }
+  .sprite-shell .sprite-editor {
+    display: grid;
+    grid-template-columns: 66px minmax(0, 1fr);
+    grid-template-rows: 34px 29px minmax(0, 1fr) 32px;
+    flex: 1;
+    min-height: 230px;
+  }
+  .sprite-shell .sprite-toolbar {
+    display: contents;
+  }
+  .sprite-shell .sprite-toolbar > .sprite-tools:first-child {
+    grid-column: 1;
+    grid-row: 1 / 4;
+    flex-direction: column;
+    flex-wrap: nowrap;
+    padding: 6px 3px;
+    gap: 2px;
+  }
+  .sprite-shell .sprite-toolbar > .sprite-tools:last-child {
+    grid-column: 2;
+    grid-row: 1;
+    flex-direction: row;
+    justify-content: flex-end;
+    padding: 0 6px;
+  }
+  .sprite-shell .sprite-tool {
+    width: 58px;
+    min-height: 37px;
+    padding: 4px 2px;
+    font-size: 10px;
+  }
+  .sprite-shell .tool-guidance {
+    grid-column: 2;
+    grid-row: 2;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .sprite-shell .sprite-viewport {
+    grid-column: 2;
+    grid-row: 3;
+    height: auto;
+    min-height: 0;
+    padding: 24px;
+  }
+  .sprite-shell .sprite-editor > .canvas-bottom {
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+}
+@media (max-width: 1100px) and (min-width: 801px) {
+  .sprite-shell .sprite-inspector {
+    width: 280px;
+  }
+  .sprite-shell .sprite-main {
+    padding: 12px;
+  }
+  .sprite-shell .sprite-name input {
+    width: 135px;
+  }
+}
+@media (max-width: 800px) {
+  .sprite-shell .sprite-main {
+    padding: 14px;
+  }
+  .sprite-shell .sprite-inspector {
+    width: 100%;
+    height: 460px;
+  }
+  .sprite-shell .sprite-heading {
+    flex-wrap: wrap;
+  }
+  .sprite-shell .sprite-viewport {
+    height: 330px;
+  }
+}
+.sprite-shell .sprite-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #c5c5c5;
+}
+.sprite-shell .sprite-range select {
+  max-width: 170px;
+}
+@media (max-width: 1100px) {
+  .sprite-shell .sprite-range {
+    gap: 5px;
+  }
+  .sprite-shell .sprite-range select {
+    max-width: 130px;
+  }
+}

@@ -1714,3 +1714,342 @@ h1 > span {
     height: 16px;
   }
 }
+
+/* Shared utility chrome and accessible interaction states. */
+[hidden] {
+  display: none !important;
+}
+:root {
+  --muted: #a4afa5;
+}
+:where(input, select, textarea, canvas):focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 3px;
+}
+.workspace-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.workspace-nav button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 13px;
+  border-radius: 5px;
+  color: #b5bfb2;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.workspace-nav button[aria-current='page'] {
+  color: var(--lime);
+  background: #303c29;
+  box-shadow: inset 0 -2px var(--lime);
+}
+.workspace-nav button:hover:not(:disabled) {
+  background: #323a30;
+}
+.unsaved-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #edbe7d;
+}
+.workflow-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 16px;
+  margin-bottom: 16px;
+  background: #232c22;
+  border: 1px solid #424f39;
+  border-radius: 6px;
+}
+.workflow-bar b {
+  font-size: 13px;
+  font-weight: 600;
+  color: #dde5d5;
+}
+.workflow-bar p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #aab9a0;
+}
+.workflow-bar p:last-child {
+  font-size: 11px;
+}
+.workflow-bar .button {
+  flex-shrink: 0;
+}
+.inline-warning {
+  color: #f0c28b !important;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+.export-description {
+  margin: 0;
+  color: #b3c2a8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.export-grid {
+  font-size: 11px;
+}
+.utility-dialog {
+  width: min(510px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+  padding: 25px;
+  border: 1px solid #637354;
+  border-radius: 9px;
+  color: #dce5d5;
+  background: #232b20;
+  box-shadow: 0 16px 60px #0008;
+}
+.utility-dialog::backdrop {
+  background: #060b09b8;
+}
+.utility-dialog h2 {
+  font-size: 20px;
+  margin: 0 0 12px;
+  font-weight: 550;
+}
+.utility-dialog p {
+  color: #bbc8b1;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+}
+.utility-dialog .settings-modal {
+  padding: 0;
+  width: auto;
+  border: 0;
+  box-shadow: none;
+  max-height: none;
+  background: none;
+}
+.icon-button {
+  width: 32px;
+  height: 32px;
+}
+.icon-button.is-on {
+  box-shadow: inset 0 0 0 1px #7d9661;
+}
+.help-text,
+.info-line,
+.alpha-note,
+.export-note,
+.timeline-hint,
+.workspace-footer,
+.slider-field > span,
+.select-field > span,
+.text-field > span,
+.trim-inputs label {
+  font-size: 12px;
+  color: #a8b69d;
+}
+.select-field select,
+.text-field input,
+.text-field textarea,
+.trim-inputs input {
+  font-size: 12px;
+}
+.control-section > summary {
+  font-size: 13px;
+}
+.preview-switch button {
+  font-size: 12px;
+}
+.canvas-status,
+.timecode {
+  font-size: 11px;
+}
+.tool-rail > button {
+  flex-direction: column;
+  gap: 5px;
+  height: 53px;
+  width: 54px;
+}
+.tool-rail > button span {
+  font-size: 10px;
+}
+.pick-instruction {
+  font-size: 12px;
+  max-width: calc(100% - 20px);
+}
+.pick-instruction kbd {
+  font: inherit;
+  color: #bccba9;
+}
+.key-color-row {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.toast {
+  max-width: min(680px, calc(100vw - 32px));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+@media (min-width: 801px) {
+  .app,
+  .sprite-shell {
+    height: 100vh;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .topbar {
+    height: 64px;
+    gap: 18px;
+    padding: 0 20px;
+  }
+  .topbar-right {
+    gap: 12px;
+  }
+  .app-body,
+  .sprite-body {
+    height: calc(100vh - 64px);
+    min-height: 0;
+  }
+  .workspace,
+  .sprite-main {
+    overflow: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #52634a transparent;
+  }
+  .workspace {
+    padding: 22px 24px 0;
+  }
+  .workspace > * {
+    flex-shrink: 0;
+  }
+  .workspace-heading {
+    margin-bottom: 17px;
+  }
+  h1 {
+    font-size: 27px;
+    margin: 7px 0;
+  }
+  .workspace-heading p {
+    font-size: 12px;
+  }
+  .canvas-area {
+    height: clamp(245px, 36vh, 490px);
+    align-items: safe center;
+    justify-content: safe center;
+  }
+  .canvas-art {
+    max-width: none;
+    margin: 28px;
+  }
+  .inspector,
+  .sprite-inspector {
+    width: 320px;
+    height: 100%;
+    max-height: none;
+    position: static;
+  }
+  .inspector-title {
+    height: 54px;
+  }
+  .control-section {
+    padding: 0 18px;
+  }
+  .section-content {
+    gap: 15px;
+    padding-bottom: 18px;
+  }
+  .control-section > summary {
+    height: 48px;
+  }
+  .export-panel {
+    padding: 16px 18px;
+    gap: 11px;
+    max-height: 58%;
+    overflow-y: auto;
+  }
+  .timeline {
+    margin-top: 16px;
+  }
+  .workshop-note {
+    margin-top: 16px;
+    padding: 14px;
+  }
+  .workshop-note p {
+    font-size: 12px;
+  }
+  .workspace-footer {
+    padding: 18px 0;
+  }
+}
+@media (min-width: 801px) and (max-width: 1100px) {
+  .brand {
+    font-size: 20px;
+  }
+  .brand-mark,
+  .header-divider,
+  .version {
+    display: none;
+  }
+  .workspace {
+    padding: 18px 16px 0;
+  }
+  .inspector,
+  .sprite-inspector {
+    width: 290px;
+  }
+  .workflow-bar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .tool-rail {
+    width: 62px;
+  }
+  .file-title > span:first-of-type {
+    max-width: 125px;
+  }
+}
+@media (max-width: 800px) {
+  .topbar {
+    height: auto;
+    min-height: 62px;
+    padding: 12px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .topbar-right {
+    gap: 8px;
+  }
+  .workspace-nav {
+    order: 3;
+    width: 100%;
+  }
+  .workspace-nav button {
+    flex: 1;
+    justify-content: center;
+  }
+  .workflow-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .workflow-bar .button {
+    align-self: flex-start;
+  }
+  .preview-switch button {
+    font-size: 11px;
+  }
+  .canvas-status {
+    font-size: 10px;
+  }
+  .pick-instruction {
+    flex-wrap: wrap;
+  }
+}
